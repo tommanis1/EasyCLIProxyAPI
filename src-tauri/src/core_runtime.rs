@@ -2332,12 +2332,15 @@ pub(crate) fn shutdown_managed_core(
     process_state: &CoreProcessState,
     gui_config_state: &GuiConfigState,
 ) {
-    let was_running = process_state.managed_pid().is_some()
+    let started_here = process_state.managed_pid().is_some();
+    let was_running = started_here
         || core_install_dir()
             .ok()
             .and_then(|install_dir| find_core_binary(&install_dir))
             .is_some_and(|binary_path| is_core_running(&binary_path));
-    if was_running {
+    // Stop only the kernel this GUI started. A kernel run by a service manager (adopted at start-up) keeps
+    // serving, so the GUI can be closed or replaced without cutting off requests in flight.
+    if started_here {
         if let Err(error) = stop_core_process_inner(process_state) {
             eprintln!("Failed to stop CPA kernel on exit: {error}");
         }

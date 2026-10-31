@@ -5,8 +5,10 @@ import { SegmentedControl } from '../components/SegmentedControl';
 import { commitFetchedQuota } from '../services/quotaEnrichment';
 import { ResetCreditExpiries } from '../components/ResetCreditExpiries';
 import { MessageNotice } from '../appNotice';
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertCircle, Gauge, ListRestart, LoaderCircle, RefreshCw } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { DndContext, PointerSensor, useDraggable, useDroppable, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core';
+import { CSS } from '@dnd-kit/utilities';
+import { AlertCircle, Gauge, GripVertical, ListRestart, LoaderCircle, RefreshCw, Save, Trash2 } from 'lucide-react';
 import { useConfirmation } from '../components/ConfirmationDialog';
 import { OAuthPageToolbar } from '../components/OAuthPageToolbar';
 import { QuotaActionFeedback } from '../components/QuotaActionFeedback';
@@ -38,7 +40,12 @@ import {
   updateQuotaCache,
   useQuotaCache,
 } from '../services/quotaCache';
-import { dedupeAuthFiles, sortAuthFilesByPriority } from '../services/authFiles';
+import { authFileName, dedupeAuthFiles, sortAuthFilesByPriority } from '../services/authFiles';
+import {
+  applyOrder, familyOf, liveOrders, loadRoutingProfiles, moveCredential, resolveOrder, saveRoutingProfiles,
+  type FamilyOrder, type RoutingProfiles,
+} from '../services/routingProfiles';
+import { Select } from '../components/Select';
 import { useI18n } from '../i18n';
 import { usePrivacyMask } from '../privacy';
 import './QuotaPage.css';
@@ -66,6 +73,10 @@ export function QuotaPage() {
   const [error, setError] = useState('');
   const [category, setCategory] = useState<'all' | QuotaDisplayProvider>('all');
   const querying = Object.values(quotas).some((quota) => quota.status === 'loading');
+  const [profiles, setProfiles] = useState<RoutingProfiles | null>(null);
+  const [profileName, setProfileName] = useState('');
+  const [routing, setRouting] = useState(false);
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
   const loadFiles = useCallback(async () => {
     setLoading(true);
@@ -75,6 +86,10 @@ export function QuotaPage() {
       const allFiles = sortAuthFilesByPriority(dedupeAuthFiles(responseList(payload, 'files')));
       const nextFiles = allFiles.filter((file) => !readBoolean(file, 'disabled') && quotaProviderForFile(file));
       setFiles(nextFiles);
+      const stored = await loadRoutingProfiles();
+      const initial = stored ?? { active: 'Default', profiles: [{ name: 'Default', families: liveOrders(nextFiles) }] };
+      if (!stored) await saveRoutingProfiles(initial);
+      setProfiles(initial);
       const validQuotaKeys = new Set(allFiles.map(quotaKey));
       pruneQuotaCache(validQuotaKeys);
       updateQuotaCache((current) => {
@@ -131,6 +146,69 @@ export function QuotaPage() {
     }
   }, [files, t]);
 
+  // Write family orders as priorities, then show the new priorities without reloading the list.
+  const applyOrders = useCallback(async (orders: Record<string, FamilyOrder>) => {
+    await Promise.all(Object.entries(orders).map(([family, order]) =>
+      applyOrder(files.filter((file) => familyOf(file) === family), order)));
+    const priorities = new Map(Object.values(orders).flatMap((order) =>
+      order.flatMap((row, index) => row.map((name) => [name, (order.length - index) * 10] as const))));
+    setFiles((current) => sortAuthFilesByPriority(current.map((file) =>
+      priorities.has(authFileName(file)) ? { ...file, priority: priorities.get(authFileName(file)) } : file)));
+  }, [files]);
+
+  const runRouting = useCallback(async (action: () => Promise<void>) => {
+    setRouting(true);
+    setError('');
+    try { await action(); } catch (requestError) { setError(String(requestError)); } finally { setRouting(false); }
+  }, []);
+
+  const storeProfiles = useCallback(async (next: RoutingProfiles) => {
+    setProfiles(next);
+    await saveRoutingProfiles(next);
+  }, []);
+
+  const familyNames = useCallback((family: string) =>
+    files.filter((file) => familyOf(file) === family).map(authFileName), [files]);
+
+  // Apply profile `name` of `base` to every family on the page and make it the active one.
+  const activate = async (base: RoutingProfiles, name: string) => {
+    const profile = base.profiles.find((item) => item.name === name);
+    if (!profile) return;
+    const live = liveOrders(files);
+    await applyOrders(Object.fromEntries(Object.keys(live).map((family) =>
+      [family, resolveOrder(profile.families[family] ?? live[family], familyNames(family))])));
+    await storeProfiles({ ...base, active: name });
+  };
+
+  const switchProfile = (name: string) => void runRouting(async () => { if (profiles) await activate(profiles, name); });
+
+  const saveProfileAs = () => void runRouting(async () => {
+    const name = profileName.trim();
+    if (!profiles || !name) return;
+    const others = profiles.profiles.filter((item) => item.name !== name);
+    await storeProfiles({ active: name, profiles: [...others, { name, families: liveOrders(files) }] });
+    setProfileName('');
+  });
+
+  const deleteProfile = () => void runRouting(async () => {
+    if (!profiles || profiles.profiles.length < 2) return;
+    const rest = profiles.profiles.filter((item) => item.name !== profiles.active);
+    await activate({ ...profiles, profiles: rest }, rest[0].name);
+  });
+
+  // A card dropped on a level joins it; dropped on a gap it becomes a level of its own there.
+  const onDragEnd = ({ active, over }: DragEndEvent) => {
+    const [family, name] = String(active.id).split('\n');
+    const [overFamily, kind, index] = String(over?.id ?? '').split('\n');
+    if (!over || overFamily !== family || !profiles) return;
+    const order = moveCredential(liveOrders(files)[family] ?? [], name, Number(index), kind === 'gap');
+    void runRouting(async () => {
+      await applyOrders({ [family]: order });
+      await storeProfiles({ ...profiles, profiles: profiles.profiles.map((item) => item.name === profiles.active
+        ? { ...item, families: { ...item.families, [family]: order } } : item) });
+    });
+  };
+
   const grouped = useMemo(() => {
     const groups = new Map<QuotaDisplayProvider, { file: AuthFile; quota: QuotaState }[]>();
     files.forEach((file) => {
@@ -148,6 +226,8 @@ export function QuotaPage() {
   const activeCategory = category !== 'all' && grouped.some(([provider]) => provider === category) ? category : 'all';
   const visibleItems = (activeCategory === 'all' ? grouped : grouped.filter(([provider]) => provider === activeCategory))
     .flatMap(([provider, items]) => items.map((item) => ({ provider, ...item })));
+  const orders = liveOrders(files);
+  const visibleFamilies = [...new Set(visibleItems.map(({ file }) => familyOf(file)))];
 
   return (
     <section className="page management-page quota-page" aria-label={t('quota.title')}>
@@ -157,6 +237,20 @@ export function QuotaPage() {
         icon={<Gauge size={18} />}
         summary={t(files.length === 1 ? 'quota.queryableCredentials.one' : 'quota.queryableCredentials.other', { count: files.length })}
       >
+        {profiles ? <div className="routing-profile-controls">
+          <Select aria-label={t('quota.routing.profile')} value={profiles.active} disabled={routing || loading}
+            onChange={(event) => switchProfile(event.target.value)}>
+            {profiles.profiles.map((profile) => <option key={profile.name} value={profile.name}>{profile.name}</option>)}
+          </Select>
+          <input className="routing-profile-name" value={profileName} placeholder={t('quota.routing.newProfile')}
+            onChange={(event) => setProfileName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') saveProfileAs(); }} />
+          <button type="button" className="secondary-button compact-button" onClick={saveProfileAs} disabled={routing || !profileName.trim()} title={t('quota.routing.saveAs')}>
+            <Save size={16} />{t('quota.routing.saveAs')}
+          </button>
+          <button type="button" className="secondary-button compact-button" onClick={deleteProfile} disabled={routing || profiles.profiles.length < 2} title={t('quota.routing.delete')}>
+            <Trash2 size={16} />
+          </button>
+        </div> : null}
         <button type="button" className="secondary-button compact-button" onClick={() => void loadFiles()} disabled={loading || refreshing || querying}>
           {loading ? <RefreshCw size={16} className="spin" /> : <ListRestart size={16} />}{t('quota.readList')}
         </button>
@@ -178,14 +272,33 @@ export function QuotaPage() {
                 <span>{label}</span><span className="quota-filter-count">{count}</span>
               </> };
             })} />
-          <div className="real-quota-grid">{visibleItems.map(({ provider, file, quota }) => <QuotaCard key={quotaKey(file)} file={file} quota={quota} onRefresh={() => void refreshOne(file)} onReset={provider === 'codex' || provider === 'claude' ? () => void resetQuota(file, quota) : undefined} />)}</div>
+          <DndContext sensors={sensors} onDragEnd={onDragEnd} autoScroll={false}>
+            {visibleFamilies.map((family) => {
+              const rows = resolveOrder(orders[family] ?? [], familyNames(family));
+              const card = (name: string) => {
+                const item = visibleItems.find(({ file }) => authFileName(file) === name);
+                return item ? <DraggableCard key={quotaKey(item.file)} id={family + '\n' + name} disabled={routing}>
+                  {(handle) => <QuotaCard file={item.file} quota={item.quota} handle={handle} onRefresh={() => void refreshOne(item.file)}
+                    onReset={item.provider === 'codex' || item.provider === 'claude' ? () => void resetQuota(item.file, item.quota) : undefined} />}
+                </DraggableCard> : null;
+              };
+              return <section className="routing-family" key={family} aria-label={family}>
+                <h2 className="routing-family-title">{family}{routing ? <LoaderCircle size={14} className="spin" /> : null}</h2>
+                {rows.map((row, index) => <div key={index}>
+                  <LevelGap id={family + '\ngap\n' + index} />
+                  <Level id={family + '\nrow\n' + index} label={t('quota.routing.level', { level: index + 1 })}>{row.map(card)}</Level>
+                </div>)}
+                <LevelGap id={family + '\ngap\n' + rows.length} />
+              </section>;
+            })}
+          </DndContext>
         </>
       )}
     </section>
   );
 }
 
-export function QuotaCard({ file, quota, onRefresh, onReset }: { file: AuthFile; quota: QuotaState; onRefresh: () => void; onReset?: () => void }) {
+export function QuotaCard({ file, quota, onRefresh, onReset, handle }: { file: AuthFile; quota: QuotaState; onRefresh: () => void; onReset?: () => void; handle?: ReactNode }) {
   const { locale, t } = useI18n();
   const now = useQuotaClock() + (quota.serverTimeOffsetMs ?? 0);
   const provider = quotaProviderForFile(file);
@@ -210,6 +323,7 @@ export function QuotaCard({ file, quota, onRefresh, onReset }: { file: AuthFile;
     <article className="panel real-quota-card surface-card">
       <div className="real-quota-card-header">
         <div className="quota-identity">
+          {handle}
           {provider === 'plugin' && String(file.provider ?? file.type).toLowerCase() !== 'gemini' ? <Gauge size={24} aria-hidden="true" /> : <img src={provider === 'plugin' && String(file.provider ?? file.type).toLowerCase() === 'gemini' ? geminiIcon : provider ? providerMeta[provider].icon : geminiIcon} alt="" className="quota-account-icon" />}
           <div><strong title={name}>{name}</strong></div>
         </div>
@@ -251,4 +365,32 @@ export function QuotaCard({ file, quota, onRefresh, onReset }: { file: AuthFile;
       {onReset && ((quota.resetCredits ?? 0) > 0 || hasPendingClaudeReset(file)) ? <button type="button" className="secondary-button compact-button quota-reset-footer" onClick={onReset} disabled={!canResetQuota(file, quota)} title={t('quota.reset')}>{t(hasPendingClaudeReset(file) ? 'quota.claude.retry' : 'quota.reset')}</button> : null}
     </article>
   );
+}
+
+/** One routing level: the credentials in it share the family's traffic. */
+function Level({ id, label, children }: { id: string; label: string; children: ReactNode }) {
+  const { setNodeRef, isOver } = useDroppable({ id });
+  return <div ref={setNodeRef} className={'routing-level' + (isOver ? ' routing-drop-over' : '')}>
+    <span className="routing-level-label">{label}</span>
+    <div className="real-quota-grid">{children}</div>
+  </div>;
+}
+
+/** The place between levels: a credential dropped here becomes a level of its own. */
+function LevelGap({ id }: { id: string }) {
+  const { t } = useI18n();
+  const { setNodeRef, isOver, active } = useDroppable({ id });
+  return <div ref={setNodeRef} className={'routing-gap' + (isOver ? ' routing-drop-over' : '') + (active ? ' routing-gap-active' : '')}>
+    {active ? t('quota.routing.newLevel') : null}
+  </div>;
+}
+
+function DraggableCard({ id, disabled, children }: { id: string; disabled: boolean; children: (handle: ReactNode) => ReactNode }) {
+  const { t } = useI18n();
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, isDragging } = useDraggable({ id, disabled });
+  return <div ref={setNodeRef} className={'routing-card' + (isDragging ? ' routing-card-dragging' : '')} style={{ transform: CSS.Translate.toString(transform) }}>
+    {children(<button type="button" ref={setActivatorNodeRef} className="routing-drag-handle" title={t('quota.routing.drag')} aria-label={t('quota.routing.drag')} {...attributes} {...listeners}>
+      <GripVertical size={16} aria-hidden="true" />
+    </button>)}
+  </div>;
 }

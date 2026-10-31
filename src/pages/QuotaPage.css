@@ -128,3 +128,67 @@
 .quota-page .quota-card-actions { display: flex; order: 4; justify-content: flex-end; margin-top: 0; }
 
 }
+
+@layer components {
+.quota-page .routing-profile-controls {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+.quota-page .routing-profile-name {
+  width: 150px;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md, 6px);
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+.quota-page .routing-family-title {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 12px 0 0;
+  font-size: var(--font-size-label);
+  color: var(--text-secondary);
+  text-transform: capitalize;
+}
+.quota-page .routing-level {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-lg, 10px);
+}
+.quota-page .routing-level-label {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: var(--font-weight-semibold);
+}
+.quota-page .routing-gap {
+  min-height: 8px;
+  border-radius: var(--radius-md, 6px);
+  color: var(--text-tertiary);
+  font-size: 11px;
+  text-align: center;
+}
+.quota-page .routing-gap-active {
+  min-height: 28px;
+  line-height: 28px;
+  border: 1px dashed var(--border-color);
+}
+.quota-page .routing-drop-over {
+  border-color: var(--ui-accent);
+  background: color-mix(in srgb, var(--ui-accent) 8%, transparent);
+}
+.quota-page .routing-card { touch-action: none; }
+.quota-page .routing-card-dragging { position: relative; z-index: 10; opacity: 0.85; }
+.quota-page .routing-drag-handle {
+  display: inline-flex;
+  padding: 2px;
+  border: 0;
+  background: none;
+  color: var(--text-tertiary);
+  cursor: grab;
+}
+}

@@ -25,6 +25,27 @@ pub(crate) fn save_usage_view_preferences(values: UsageViewPreferences) -> Resul
     write_bytes_atomically(&core_base_dir()?.join("usage-view-preferences.json"), &content)
 }
 
+/// Routing profiles: named credential orders per provider family, kept by the quota page.
+/// The file is the page's own JSON; the backend only stores it.
+#[tauri::command]
+pub(crate) fn get_routing_profiles() -> Result<serde_json::Value, String> {
+    match fs::read(core_base_dir()?.join("routing-profiles.json")) {
+        Ok(content) => serde_json::from_slice(&content)
+            .map_err(|error| format!("Failed to parse routing profiles: {error}")),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(serde_json::Value::Null),
+        Err(error) => Err(format!("Failed to read routing profiles: {error}")),
+    }
+}
+
+#[tauri::command]
+pub(crate) fn save_routing_profiles(profiles: serde_json::Value) -> Result<(), String> {
+    let content = serde_json::to_vec_pretty(&profiles).map_err(|error| error.to_string())?;
+    if !profiles.is_object() || content.len() > 256 * 1024 {
+        return Err("Invalid routing profiles".into());
+    }
+    write_bytes_atomically(&core_base_dir()?.join("routing-profiles.json"), &content)
+}
+
 #[tauri::command]
 pub(crate) fn health_check() -> &'static str {
     "EasyCLIProxyAPI Rust backend is ready"

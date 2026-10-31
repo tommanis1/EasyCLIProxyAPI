@@ -2811,6 +2811,8 @@ fn main() {
             get_gui_settings,
             get_usage_view_preferences,
             save_usage_view_preferences,
+            get_routing_profiles,
+            save_routing_profiles,
             resolve_api_access_remarks,
             save_api_access_remark,
             set_app_locale,
