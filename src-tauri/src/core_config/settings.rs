@@ -138,12 +138,6 @@ pub(crate) fn recover_management_secret(
     LEGACY_DEFAULT_MANAGEMENT_SECRET_KEY.to_string()
 }
 
-pub(crate) fn normalize_management_secret_key(secret_key: String) -> Result<String, String> {
-    let secret_key = secret_key.trim().to_string();
-    validate_strong_management_secret_key(&secret_key)?;
-    Ok(secret_key)
-}
-
 pub(crate) fn is_example_core_api_key(api_key: &str) -> bool {
     let value = api_key.trim();
     value == "your-api-key" || value.starts_with("your-api-key-")
@@ -207,24 +201,6 @@ pub(crate) fn normalize_session_affinity_ttl(value: String) -> Result<String, St
         return Err("Session affinity TTL must be a positive duration such as 30m or 1h30m; leave it blank to use the core default".to_string());
     }
     Ok(if nanos < 1_000_000_000.0 { "1s".to_string() } else { value })
-}
-
-pub(crate) fn normalize_core_tls_settings(
-    settings: CoreTlsSettings,
-) -> Result<CoreTlsSettings, String> {
-    let cert = normalize_optional_config_string(settings.cert, "TLS certificate path")?;
-    let key = normalize_optional_config_string(settings.key, "TLS private key path")?;
-    if settings.enabled && (cert.is_empty() || key.is_empty()) {
-        return Err(
-            "TLS is enabled, so both the certificate and private key paths are required"
-                .to_string(),
-        );
-    }
-    Ok(CoreTlsSettings {
-        enabled: settings.enabled,
-        cert,
-        key,
-    })
 }
 
 #[cfg(test)]
@@ -492,86 +468,6 @@ pub(crate) fn patch_core_network_routing_yaml(
             &["requests", "streaming", "bootstrap-retries"],
             serde_norway::to_value(config.streaming_bootstrap_retries)
                 .map_err(|err| format!("Failed to serialize streaming bootstrap retry count: {err}"))?,
-        )?;
-        Ok(*document != original)
-    })
-}
-
-pub(crate) fn patch_core_network_endpoint_yaml(
-    content: &str,
-    config: &GuiConfigFile,
-) -> Result<Option<String>, String> {
-    patch_core_yaml_document(content, |document| {
-        let original = document.clone();
-        apply_network_settings(document, config)?;
-        set_core_yaml_schema_value(
-            document,
-            &["proxy-url"],
-            &["requests", "proxy-url"],
-            serde_norway::Value::String(config.proxy_url.clone()),
-        )?;
-        Ok(*document != original)
-    })
-}
-
-pub(crate) fn patch_core_retry_yaml(
-    content: &str,
-    config: &GuiConfigFile,
-) -> Result<Option<String>, String> {
-    patch_core_yaml_document(content, |document| {
-        let original = document.clone();
-        set_core_yaml_schema_value(
-            document,
-            &["disable-cooling"],
-            &["routing", "cooldown", "disable-cooling"],
-            serde_norway::Value::Bool(config.disable_cooling),
-        )?;
-        set_core_yaml_schema_value(
-            document,
-            &["request-retry"],
-            &["routing", "retry", "request-retry"],
-            serde_norway::to_value(config.request_retry).map_err(|err| err.to_string())?,
-        )?;
-        set_core_yaml_schema_value(
-            document,
-            &["max-retry-credentials"],
-            &["routing", "retry", "max-retry-credentials"],
-            serde_norway::to_value(config.max_retry_credentials).map_err(|err| err.to_string())?,
-        )?;
-        set_core_yaml_schema_value(
-            document,
-            &["max-retry-interval"],
-            &["routing", "retry", "max-retry-interval"],
-            serde_norway::to_value(config.max_retry_interval).map_err(|err| err.to_string())?,
-        )?;
-        set_core_yaml_schema_value(
-            document,
-            &["streaming", "bootstrap-retries"],
-            &["requests", "streaming", "bootstrap-retries"],
-            serde_norway::to_value(config.streaming_bootstrap_retries)
-                .map_err(|err| err.to_string())?,
-        )?;
-        Ok(*document != original)
-    })
-}
-
-pub(crate) fn patch_core_session_routing_yaml(
-    content: &str,
-    config: &GuiConfigFile,
-) -> Result<Option<String>, String> {
-    patch_core_yaml_document(content, |document| {
-        let original = document.clone();
-        set_core_yaml_nested_value(
-            document,
-            "routing",
-            "session-affinity",
-            serde_norway::Value::Bool(config.routing_session_affinity),
-        )?;
-        set_core_yaml_nested_value(
-            document,
-            "routing",
-            "session-affinity-ttl",
-            serde_norway::Value::String(config.routing_session_affinity_ttl.clone()),
         )?;
         Ok(*document != original)
     })
@@ -1593,9 +1489,6 @@ pub(crate) fn load_or_create_gui_config() -> Result<GuiConfigFile, String> {
     if presence.silent_start.is_none() {
         changed = true;
     }
-    if presence.default_terminal.is_none() {
-        changed = true;
-    }
     if presence.download_source.is_none() {
         config.download_source = if config.prefer_gitcode_downloads {
             VersionDownloadSource::Gitcode
@@ -2087,11 +1980,6 @@ pub(crate) fn sanitize_gui_config_at(
         config.locale = normalized_locale.to_string();
         changed = true;
     }
-    let default_terminal = normalize_agent_terminal(&config.default_terminal);
-    if config.default_terminal != default_terminal {
-        config.default_terminal = default_terminal;
-        changed = true;
-    }
     let host = config.host.trim();
     if config.host != host {
         config.host = host.to_string();
@@ -2232,12 +2120,12 @@ pub(crate) fn write_gui_config_to_path(
         .unwrap_or_default();
     let root = document.as_table_mut();
     if config.usage_statistics_disabled == Some(true) {
-        set_codex_table_item(root, "usage_statistics_disabled", value(true));
+        set_table_item(root, "usage_statistics_disabled", value(true));
     } else {
         root.remove("usage_statistics_disabled");
     }
     if config.image_generation_user_selected {
-        set_codex_table_item(root, "image-generation-user-selected", value(true));
+        set_table_item(root, "image-generation-user-selected", value(true));
     } else {
         root.remove("image-generation-user-selected");
     }
@@ -2250,7 +2138,6 @@ pub(crate) fn write_gui_config_to_path(
         ("start-core-on-launch", value(config.start_core_on_launch)),
         ("silent-start", value(config.silent_start)),
         ("close-behavior", value(config.close_behavior.as_str())),
-        ("default-terminal", value(config.default_terminal.as_str())),
         ("auth-dir", value(config.auth_dir.as_str())),
         ("auth-dir-user-selected", value(config.auth_dir_user_selected)),
         (
@@ -2309,7 +2196,7 @@ pub(crate) fn write_gui_config_to_path(
             value(i64::from(config.streaming_bootstrap_retries)),
         ),
     ] {
-        set_codex_table_item(root, key, item);
+        set_table_item(root, key, item);
     }
     for key in [
         "proxy-mode",
@@ -2325,14 +2212,14 @@ pub(crate) fn write_gui_config_to_path(
         ("window-height", config.window_height),
     ] {
         if let Some(dimension) = dimension {
-            set_codex_table_item(root, key, value(i64::from(dimension)));
+            set_table_item(root, key, value(i64::from(dimension)));
         } else {
             root.remove(key);
         }
     }
     for (key, coordinate) in [("window-x", config.window_x), ("window-y", config.window_y)] {
         if let Some(coordinate) = coordinate {
-            set_codex_table_item(root, key, value(i64::from(coordinate)));
+            set_table_item(root, key, value(i64::from(coordinate)));
         } else {
             root.remove(key);
         }
@@ -2344,17 +2231,17 @@ pub(crate) fn write_gui_config_to_path(
         table.insert("remark", Value::from(entry.remark.as_str()));
         api_keys.push(Value::InlineTable(table));
     }
-    set_codex_table_item(root, "api-keys", Item::Value(Value::Array(api_keys)));
+    set_table_item(root, "api-keys", Item::Value(Value::Array(api_keys)));
     let mut custom_download_mirrors = Array::new();
     for url in &config.custom_download_mirrors {
         custom_download_mirrors.push(url.as_str());
     }
-    set_codex_table_item(
+    set_table_item(
         root,
         "custom-download-mirrors",
         Item::Value(Value::Array(custom_download_mirrors)),
     );
-    set_codex_table_item(
+    set_table_item(
         root,
         "active-custom-download-mirror",
         value(config.active_custom_download_mirror.as_str()),
@@ -2373,7 +2260,7 @@ pub(crate) fn write_gui_config_to_path(
         table.insert("remark", Value::from(entry.remark.as_str()));
         api_access_remarks.push(Value::InlineTable(table));
     }
-    set_codex_table_item(
+    set_table_item(
         root,
         "api-access-remarks",
         Item::Value(Value::Array(api_access_remarks)),
@@ -2473,3 +2360,18 @@ pub(crate) fn gui_config_path() -> Result<PathBuf, String> {
 pub(crate) fn legacy_gui_config_path() -> Result<PathBuf, String> {
     Ok(core_base_dir()?.join(LEGACY_GUI_CONFIG_FILE))
 }
+
+pub(crate) fn set_table_item(
+    table: &mut toml_edit::Table,
+    key: &str,
+    mut item: toml_edit::Item,
+) {
+    if let (Some(current), Some(next)) = (
+        table.get(key).and_then(toml_edit::Item::as_value),
+        item.as_value_mut(),
+    ) {
+        *next.decor_mut() = current.decor().clone();
+    }
+    *table.entry(key).or_insert(toml_edit::Item::None) = item;
+}
+

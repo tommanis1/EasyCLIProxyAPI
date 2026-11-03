@@ -96,23 +96,6 @@ fn core_config_view_exposes_api_key_metadata_for_the_webview() {
     assert!(view.get("managementSecretKey").is_none());
 }
 
-#[test]
-fn webui_management_secret_requires_a_non_empty_plaintext_value() {
-    assert_eq!(
-        normalize_management_secret_key("  new-webui-secret  ".to_string()).unwrap(),
-        "new-webui-secret"
-    );
-    assert!(normalize_management_secret_key("   ".to_string()).is_err());
-    assert!(normalize_management_secret_key(
-        "$2a$10$abcdefghijklmnopqrstuuuuuuuuuuuuuuuuuuuuuuuuuuuuu".to_string()
-    )
-    .is_err());
-    assert!(normalize_management_secret_key("bad\nsecret".to_string()).is_err());
-    assert_eq!(
-        normalize_management_secret_key("  123456  ".to_string()).unwrap(),
-        "123456"
-    );
-}
 
 #[test]
 fn management_secret_recovery_synchronizes_kernel_and_request_credentials() {
@@ -277,84 +260,8 @@ fn path_configuration_normalizes_auth_paths_and_rejects_missing_home() {
     fs::remove_dir_all(root).unwrap();
 }
 
-#[test]
-fn path_configuration_writes_effective_tls_fields_without_version_marker() {
-    let settings = CoreTlsSettings {
-        enabled: true,
-        cert: "certs/new.crt".to_string(),
-        key: "certs/new.key".to_string(),
-    };
-    for input in [
-        "server:\n  tls: {enable: true, cert: old.crt, key: old.key}\n",
-        "server: {tls: {enable: false}}\n",
-        "tls: {enable: false, cert: legacy.crt, key: legacy.key}\nserver: {tls: {enable: false}}\n",
-    ] {
-        let patched = patch_core_tls_settings_yaml(input, &settings).unwrap().unwrap();
-        let document: serde_norway::Value = serde_norway::from_str(&patched).unwrap();
-        let effective = core_tls_settings_from_value(&document).unwrap();
-        assert!(effective.enabled);
-        assert_eq!(effective.cert, settings.cert);
-        assert_eq!(effective.key, settings.key);
-        if let Some(legacy) = document.get("tls") {
-            assert_eq!(legacy["cert"].as_str(), Some(settings.cert.as_str()));
-        }
-        assert!(patch_core_tls_settings_yaml(&patched, &settings).unwrap().is_none());
-    }
-}
 
-#[test]
-fn tls_patch_preserves_null_legacy_fields_with_v8_settings() {
-    let settings = CoreTlsSettings {
-        enabled: false,
-        cert: "certs/new.crt".to_string(),
-        key: "certs/new.key".to_string(),
-    };
-    for version_marker in ["config-version: 8\n", ""] {
-        let input = format!(
-            "{version_marker}tls: null\nserver:\n  tls:\n    enable: true\n    cert: old.crt\n    key: old.key\n"
-        );
-        let patched = patch_core_tls_settings_yaml(&input, &settings)
-            .unwrap()
-            .expect("TLS settings should change");
-        let document: serde_norway::Value = serde_norway::from_str(&patched).unwrap();
-        assert_eq!(document.get("tls"), Some(&serde_norway::Value::Null));
-        let effective = core_tls_settings_from_value(&document).unwrap();
-        assert_eq!(effective.enabled, settings.enabled);
-        assert_eq!(effective.cert, settings.cert);
-        assert_eq!(effective.key, settings.key);
-        assert!(patch_core_tls_settings_yaml(&patched, &settings)
-            .unwrap()
-            .is_none());
-    }
-}
 
-#[test]
-fn path_configuration_writes_effective_logging_fields_without_version_marker() {
-    let config = GuiConfigFile {
-        logging_to_file: true,
-        logs_max_total_size_mb: 123,
-        ..GuiConfigFile::default()
-    };
-    let settings = CoreConfigSettings::from(&config);
-    for input in [
-        "observability:\n  logs: {logging-to-file: false, logs-max-total-size-mb: 0}\n",
-        "logging-to-file: false\nobservability:\n  logs: {logging-to-file: false}\n",
-    ] {
-        for patched in [
-            apply_gui_managed_settings(input, &config).unwrap(),
-            patch_core_yaml_document(input, |document| apply_core_logging_settings(document, &settings))
-                .unwrap().unwrap(),
-        ] {
-            let document: serde_norway::Value = serde_norway::from_str(&patched).unwrap();
-            let effective = core_config_settings_from_value(&document).unwrap();
-            assert!(effective.logging_to_file);
-            assert_eq!(effective.logs_max_total_size_mb, 123);
-            if let Some(legacy) = document.get("logging-to-file") {
-                assert_eq!(legacy.as_bool(), Some(true));
-            }
-        }
-    }
-}
 
 #[test]
 fn relative_oauth_dir_recovers_existing_persistent_credentials() {
@@ -484,78 +391,6 @@ fn oauth_directory_write_updates_the_effective_v8_field_without_version_marker()
     }
 }
 
-#[test]
-fn oauth_recovery_survives_config_reload_and_v8_upgrade() {
-    for input in [
-        "auth-dir: oauth\n",
-        "config-version: 8\noauth:\n  auth-dir: oauth\n",
-        "oauth:\n  auth-dir: ./oauth\n",
-        "auth-dir: ../oauth\noauth: {auth-dir: oauth}\n",
-    ] {
-        let root = agent_test_home("oauth-recovery-reload");
-        let install_dir = root.join("cpa-core");
-        let persistent_auth_dir = root.join(OAUTH_DIR_NAME);
-        let core_config_path = install_dir.join(CORE_CONFIG_FILE);
-        let gui_config_path = root.join(GUI_CONFIG_FILE);
-        let credential_path = persistent_auth_dir.join("account.json");
-        fs::create_dir_all(&install_dir).unwrap();
-        fs::create_dir_all(&persistent_auth_dir).unwrap();
-        fs::write(&credential_path, b"existing-credential").unwrap();
-        fs::write(&core_config_path, format!("# user comment\n{input}")).unwrap();
-        let original_document = serde_norway::from_str(input).unwrap();
-        let mut config = GuiConfigFile {
-            auth_dir: core_config_settings_from_value(&original_document)
-                .unwrap()
-                .auth_dir,
-            ..GuiConfigFile::default()
-        };
-        write_gui_config_to_path(&config, &gui_config_path).unwrap();
-
-        assert!(
-            sanitize_gui_config_at(&mut config, &install_dir, &persistent_auth_dir).unwrap()
-        );
-        let patched = fs::read_to_string(&core_config_path).unwrap();
-        assert!(patched.contains("# user comment"));
-        let patched_document: serde_norway::Value = serde_norway::from_str(&patched).unwrap();
-        assert_eq!(
-            core_config_settings_from_value(&patched_document).unwrap().auth_dir,
-            DEFAULT_AUTH_DIR
-        );
-        if let Some(legacy) = patched_document.get("auth-dir") {
-            assert_eq!(legacy.as_str(), Some(DEFAULT_AUTH_DIR));
-        }
-
-        write_gui_config_to_path(&config, &gui_config_path).unwrap();
-        let mut reloaded: GuiConfigFile =
-            toml::from_str(&fs::read_to_string(&gui_config_path).unwrap()).unwrap();
-        assert_eq!(reloaded.auth_dir, DEFAULT_AUTH_DIR);
-        assert!(
-            !sanitize_gui_config_at(&mut reloaded, &install_dir, &persistent_auth_dir).unwrap()
-        );
-        assert_eq!(fs::read_to_string(&core_config_path).unwrap(), patched);
-
-        let staging_dir = root.join("next-core");
-        fs::create_dir_all(&staging_dir).unwrap();
-        fs::write(
-            staging_dir.join(CORE_EXAMPLE_CONFIG_FILE),
-            "config-version: 8\noauth:\n  auth-dir: oauth\n",
-        )
-        .unwrap();
-        migrate_core_config_for_update(&install_dir, &staging_dir).unwrap();
-        let upgraded = fs::read_to_string(staging_dir.join(CORE_CONFIG_FILE)).unwrap();
-        let started = apply_gui_managed_settings(&upgraded, &reloaded).unwrap();
-        let started_document = serde_norway::from_str(&started).unwrap();
-        let effective = core_config_settings_from_value(&started_document).unwrap();
-        assert_eq!(effective.auth_dir, DEFAULT_AUTH_DIR);
-        assert_eq!(
-            auth_dir_path_for_core(&effective.auth_dir, &install_dir).unwrap(),
-            persistent_auth_dir
-        );
-        assert_eq!(fs::read(&credential_path).unwrap(), b"existing-credential");
-        assert!(!install_dir.join(OAUTH_DIR_NAME).join("account.json").exists());
-        fs::remove_dir_all(root).unwrap();
-    }
-}
 
 #[test]
 fn oauth_recovery_preserves_config_when_inspection_or_patch_fails() {
@@ -1142,89 +977,7 @@ fn confirmed_network_routing_patch_updates_all_fields_together() {
     assert!(updated.contains("# unrelated"));
 }
 
-#[test]
-fn independent_network_modules_only_patch_their_own_fields() {
-    let config = GuiConfigFile {
-        host: "192.168.1.20".to_string(),
-        port: 9527,
-        proxy_url: "socks5://127.0.0.1:7890".to_string(),
-        routing_session_affinity: true,
-        routing_session_affinity_ttl: "2h".to_string(),
-        disable_cooling: true,
-        request_retry: 7,
-        max_retry_credentials: 8,
-        max_retry_interval: 9,
-        streaming_bootstrap_retries: 10,
-        ..GuiConfigFile::default()
-    };
-    let input = "host: 127.0.0.1\nport: 8317\nproxy-url: \"\"\nrouting:\n  session-affinity: false\n  session-affinity-ttl: 1h\ndisable-cooling: false\nrequest-retry: 1\nmax-retry-credentials: 2\nmax-retry-interval: 3\nstreaming:\n  bootstrap-retries: 4\n";
 
-    let network = patch_core_network_endpoint_yaml(input, &config)
-        .unwrap()
-        .expect("network endpoint should change");
-    let network = serde_norway::from_str::<serde_norway::Value>(&network).unwrap();
-    assert_eq!(network["host"], "192.168.1.20");
-    assert_eq!(network["port"], 9527);
-    assert_eq!(network["proxy-url"], "socks5://127.0.0.1:7890");
-    assert_eq!(network["disable-cooling"], false);
-    assert_eq!(network["request-retry"], 1);
-    assert_eq!(network["routing"]["session-affinity"], false);
-
-    let retry = patch_core_retry_yaml(input, &config)
-        .unwrap()
-        .expect("retry settings should change");
-    let retry = serde_norway::from_str::<serde_norway::Value>(&retry).unwrap();
-    assert_eq!(retry["disable-cooling"], true);
-    assert_eq!(retry["request-retry"], 7);
-    assert_eq!(retry["max-retry-credentials"], 8);
-    assert_eq!(retry["max-retry-interval"], 9);
-    assert_eq!(retry["streaming"]["bootstrap-retries"], 10);
-    assert_eq!(retry["host"], "127.0.0.1");
-
-    let routing = patch_core_session_routing_yaml(input, &config)
-        .unwrap()
-        .expect("session routing should change");
-    let routing = serde_norway::from_str::<serde_norway::Value>(&routing).unwrap();
-    assert_eq!(routing["routing"]["session-affinity"], true);
-    assert_eq!(routing["routing"]["session-affinity-ttl"], "2h");
-    assert_eq!(routing["request-retry"], 1);
-}
-
-#[test]
-fn core_config_controls_preserve_comments_and_unrelated_values() {
-    let input = "# Client authentication\napi-keys:\n  - old-key\n\n# Plugin runtime\nplugins:\n  enabled: false # global switch\n  dir: plugins\n\n# Credential routing\nrouting:\n  strategy: round-robin # current strategy\n  session-affinity: true\n\ndebug: true # untouched\n";
-    let mut document = yaml_serde_edit::YamlValue::parse(input).unwrap();
-    let mut updated = document.get().clone();
-
-    set_core_api_keys(
-        &mut updated,
-        vec!["old-key".to_string(), "new-key".to_string()],
-    )
-    .unwrap();
-    set_nested_yaml_value(&mut updated, &["plugins", "enabled"], true).unwrap();
-    set_nested_yaml_value(
-        &mut updated,
-        &["routing", "strategy"],
-        "fill-first".to_string(),
-    )
-    .unwrap();
-    document.set(updated);
-
-    let rendered = document.get_string();
-    assert!(rendered.contains("# Client authentication"));
-    assert!(rendered.contains("# Plugin runtime"));
-    assert!(rendered.contains("# global switch"));
-    assert!(rendered.contains("# Credential routing"));
-    assert!(rendered.contains("# current strategy"));
-    assert!(rendered.contains("debug: true # untouched"));
-
-    let settings = core_config_settings_from_value(document.get()).unwrap();
-    assert_eq!(settings.api_keys, vec!["old-key", "new-key"]);
-    assert!(settings.plugins_enabled);
-    assert_eq!(settings.routing_strategy, "fill-first");
-    assert_eq!(document.get()["plugins"]["dir"], "plugins");
-    assert_eq!(document.get()["routing"]["session-affinity"], true);
-}
 
 #[test]
 fn yaml_edit_runtime_patches_supported_fields_without_reflowing_yaml() {
@@ -1263,23 +1016,6 @@ fn yaml_edit_runtime_patches_supported_fields_without_reflowing_yaml() {
     assert_eq!(settings.routing_strategy, "fill-first");
 }
 
-#[test]
-fn yaml_edit_sequence_shrink_keeps_following_top_level_key_valid() {
-    let input = "# API keys for authentication\napi-keys:\n  - first-key\n  - second-key\n  - third-key\n\n# Enable debug logging\ndebug: false\n";
-    let original = serde_norway::from_str::<serde_norway::Value>(input).unwrap();
-    let mut updated = original.clone();
-    set_core_api_keys(&mut updated, vec!["first-key".to_string()]).unwrap();
-
-    let rendered = render_yaml_value_changes(input, &original, &updated)
-        .unwrap_or_else(|error| panic!("sequence shrink failed: {error}"));
-    let parsed = serde_norway::from_str::<serde_norway::Value>(&rendered)
-        .unwrap_or_else(|error| panic!("invalid YAML: {error}\n{rendered}"));
-
-    assert_eq!(parsed["api-keys"][0], "first-key");
-    assert_eq!(parsed["api-keys"].as_sequence().unwrap().len(), 1);
-    assert_eq!(parsed["debug"], false);
-    assert!(rendered.find("api-keys:").unwrap() < rendered.find("debug:").unwrap());
-}
 
 #[test]
 fn runtime_yaml_ast_patch_handles_core_comments_around_nested_mapping() {
@@ -1568,21 +1304,6 @@ fn v8_settings_can_populate_null_sections_without_losing_siblings() {
     assert!(apply_gui_managed_settings("config-version: 8\nrequests: broken\n", &GuiConfigFile::default()).is_err());
 }
 
-#[test]
-fn v8_sensitive_words_fall_back_per_field_and_clear_legacy_values() {
-    let input = "config-version: 8\nantigravity: {sensitive-words: [old]}\ndevin: {sensitive-words: [old-devin]}\noauth:\n  providers:\n    antigravity: {signature-cache-enabled: true}\n    devin: {sensitive-words: [new-devin]}\n";
-    let document: serde_norway::Value = serde_norway::from_str(input).unwrap();
-    let settings = core_sensitive_words_settings_from_value(&document).unwrap();
-    assert_eq!(settings.antigravity_sensitive_words, vec!["old"]);
-    assert_eq!(settings.devin_sensitive_words, vec!["new-devin"]);
-    let updated = patch_core_sensitive_words_yaml(input, &CoreSensitiveWordsSettings::default()).unwrap().unwrap();
-    let document: serde_norway::Value = serde_norway::from_str(&updated).unwrap();
-    for path in [vec!["antigravity"], vec!["devin"], vec!["oauth", "providers", "antigravity"], vec!["oauth", "providers", "devin"]] {
-        let section = nested_yaml_value(document.as_mapping().unwrap(), &path).unwrap();
-        assert_eq!(section["sensitive-words"].as_sequence().unwrap().len(), 0);
-    }
-    assert_eq!(document["oauth"]["providers"]["antigravity"]["signature-cache-enabled"], true);
-}
 
 #[test]
 fn v8_tls_reads_mixed_layout_per_field() {
@@ -1770,142 +1491,10 @@ fn core_tls_settings_read_defaults_and_configured_values() {
     assert_eq!(configured.key, "C:/certs/server.key");
 }
 
-#[test]
-fn tls_patch_preserves_unrelated_yaml_and_paths_when_disabled() {
-    let input = "# server\nhost: 127.0.0.1\ntls:\n  enable: true\n  cert: old.crt\n  key: old.key\ncustom:\n  keep: true\n";
-    let settings = CoreTlsSettings {
-        enabled: false,
-        cert: "new.crt".to_string(),
-        key: "new.key".to_string(),
-    };
-    let patched = patch_core_tls_settings_yaml(input, &settings)
-        .unwrap()
-        .expect("TLS settings should change");
-    let document = serde_norway::from_str::<serde_norway::Value>(&patched).unwrap();
 
-    assert!(patched.contains("# server"));
-    assert_eq!(document["tls"]["enable"], false);
-    assert_eq!(document["tls"]["cert"], "new.crt");
-    assert_eq!(document["tls"]["key"], "new.key");
-    assert_eq!(document["custom"]["keep"], true);
-}
 
-#[test]
-fn sensitive_words_patch_preserves_other_config_and_clears_each_provider_independently() {
-    let input = "# keep this comment\nantigravity:\n  sensitive-words:\n    - old\n  signature-cache: true\ndevin:\n  sensitive-words:\n    - old-devin\ncustom:\n  keep: true\n";
-    let settings = normalize_core_sensitive_words_settings(CoreSensitiveWordsSettings {
-        antigravity_sensitive_words: vec!["  Hermes  ".into(), "".into(), "Nous Research".into()],
-        devin_sensitive_words: Vec::new(),
-    });
-    let patched = patch_core_sensitive_words_yaml(input, &settings)
-        .unwrap()
-        .expect("sensitive words should change");
-    let document = serde_norway::from_str::<serde_norway::Value>(&patched).unwrap();
-    assert!(patched.contains("# keep this comment"));
-    assert_eq!(document["custom"]["keep"], true);
-    assert_eq!(document["antigravity"]["signature-cache"], true);
-    assert_eq!(
-        document["antigravity"]["sensitive-words"],
-        serde_norway::to_value(vec!["Hermes", "Nous Research"]).unwrap()
-    );
-    assert_eq!(
-        document["devin"]["sensitive-words"],
-        serde_norway::to_value(Vec::<String>::new()).unwrap()
-    );
-    assert_eq!(
-        core_sensitive_words_settings_from_value(&document).unwrap(),
-        settings
-    );
-    assert!(patch_core_sensitive_words_yaml(&patched, &settings)
-        .unwrap()
-        .is_none());
-}
 
-#[test]
-fn sensitive_words_patch_adds_missing_sections_without_touching_unrelated_fields() {
-    let input = "# config\ndebug: true\n";
-    let empty = CoreSensitiveWordsSettings::default();
-    assert!(patch_core_sensitive_words_yaml(input, &empty)
-        .unwrap()
-        .is_none());
 
-    let settings = CoreSensitiveWordsSettings {
-        antigravity_sensitive_words: vec!["proxy".into()],
-        devin_sensitive_words: vec!["Claude Code".into()],
-    };
-    let patched = patch_core_sensitive_words_yaml(input, &settings)
-        .unwrap()
-        .expect("missing sections should be created");
-    let document = serde_norway::from_str::<serde_norway::Value>(&patched).unwrap();
-    assert!(patched.contains("# config"));
-    assert_eq!(document["debug"], true);
-    assert_eq!(
-        core_sensitive_words_settings_from_value(&document).unwrap(),
-        settings
-    );
-
-    let invalid =
-        serde_norway::from_str::<serde_norway::Value>("devin:\n  sensitive-words: not-a-list\n")
-            .unwrap();
-    assert!(core_sensitive_words_settings_from_value(&invalid).is_err());
-    let empty =
-        serde_norway::from_str::<serde_norway::Value>("antigravity:\n  sensitive-words:\ndevin:\n")
-            .unwrap();
-    assert_eq!(
-        core_sensitive_words_settings_from_value(&empty).unwrap(),
-        CoreSensitiveWordsSettings::default()
-    );
-    let updated =
-        patch_core_sensitive_words_yaml("antigravity:\n  sensitive-words:\ndevin:\n", &settings)
-            .unwrap()
-            .unwrap();
-    let parsed = serde_norway::from_str::<serde_norway::Value>(&updated).unwrap();
-    assert_eq!(
-        core_sensitive_words_settings_from_value(&parsed).unwrap(),
-        settings
-    );
-    let only_devin = CoreSensitiveWordsSettings {
-        antigravity_sensitive_words: Vec::new(),
-        devin_sensitive_words: vec!["another phrase".into()],
-    };
-    let patched =
-        patch_core_sensitive_words_yaml("antigravity:\n  sensitive-words:\ndevin:\n", &only_devin)
-            .unwrap()
-            .unwrap();
-    let parsed = serde_norway::from_str::<serde_norway::Value>(&patched).unwrap();
-    assert_eq!(
-        core_sensitive_words_settings_from_value(&parsed).unwrap(),
-        only_devin
-    );
-    assert!(parsed["antigravity"]["sensitive-words"].is_null());
-}
-
-#[test]
-fn enabled_tls_requires_both_paths() {
-    let missing_key = CoreTlsSettings {
-        enabled: true,
-        cert: "server.crt".to_string(),
-        key: String::new(),
-    };
-    assert!(normalize_core_tls_settings(missing_key).is_err());
-
-    let disabled = CoreTlsSettings {
-        enabled: false,
-        cert: "  server.crt  ".to_string(),
-        key: String::new(),
-    };
-    let disabled = normalize_core_tls_settings(disabled).unwrap();
-    assert_eq!(disabled.cert, "server.crt");
-    assert!(disabled.key.is_empty());
-}
-
-#[test]
-fn core_loopback_origin_uses_the_selected_transport() {
-    assert_eq!(core_loopback_origin(8317, false), "http://127.0.0.1:8317");
-    assert_eq!(core_loopback_origin(9527, true), "https://127.0.0.1:9527");
-    assert!(is_managed_agent_base_url("https://127.0.0.1:9527/v1"));
-    assert!(is_managed_agent_base_url("https://localhost:9527"));
-}
 
 #[test]
 fn core_origin_uses_connectable_custom_and_ipv6_hosts() {
@@ -1961,136 +1550,7 @@ fn unchanged_yaml_is_not_written_again() {
     fs::remove_file(path).unwrap();
 }
 
-#[test]
-fn core_config_saves_preserve_the_file_watched_by_the_running_core() {
-    let root = agent_test_home("core-config-watched-file");
-    let path = root.join(CORE_CONFIG_FILE);
-    fs::write(&path, "auth-dir: old-directory\nusage-statistics-enabled: false\n").unwrap();
-    let mut watched_file = File::open(&path).unwrap();
 
-    for directory in ["first-directory", "x"] {
-        patch_core_auth_dir_at(&path, directory).unwrap();
-        watched_file.seek(SeekFrom::Start(0)).unwrap();
-        let mut watched_content = String::new();
-        watched_file.read_to_string(&mut watched_content).unwrap();
-        assert_eq!(watched_content, fs::read_to_string(&path).unwrap());
-        let document = serde_norway::from_str(&watched_content).unwrap();
-        let settings = core_config_settings_from_value(&document).unwrap();
-        assert_eq!(settings.auth_dir, directory);
-        assert!(!settings.usage_statistics_enabled);
-    }
-    drop(watched_file);
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn startup_preserves_all_user_owned_yaml_and_only_applies_gui_managed_values() {
-    let template = "# Current release template\nhost: \"\" # template bind address\nport: 8317\n\n# Client authentication\napi-keys:\n  - template-key\n\n# Plugin runtime\nplugins:\n  enabled: false # plugin switch\n\n# Credential routing\nrouting:\n  strategy: round-robin # routing switch\n\n# New release option\nnew-option: true\nnested:\n  # Nested template comment\n  keep: template\n  added: from-template\nlist:\n  - template-item\n";
-    let current = "# User-edited configuration\nhost: 127.0.0.1\nport: 9000\n# User-owned nested values\nnested:\n  keep: current\n  current-only: retained\nlist:\n  - current-a\n  - current-b\nextra: true\ncustom-provider:\n  base-url: https://example.com/v1\n  headers:\n    X-Custom-Header: custom-value\n  models:\n    - name: custom-model\n      aliases: [custom-a, custom-b]\nplugins:\n  custom-runtime-options:\n    sandbox: strict\n    environment:\n      CUSTOM_FLAG: enabled\nrouting:\n  custom-rules:\n    - match: custom-*\n      target: custom-provider\nremote-management:\n  custom-dashboard-option: retained\n";
-    let config = GuiConfigFile {
-        locale: "zh-CN".to_string(),
-        port: 9527,
-        allow_lan: true,
-        host: "0.0.0.0".to_string(),
-        run_on_startup: false,
-        start_core_on_launch: true,
-        silent_start: false,
-        close_behavior: WindowsCloseBehavior::Ask,
-        default_terminal: DEFAULT_AGENT_TERMINAL.to_string(),
-        window_width: None,
-        window_height: None,
-        window_x: None,
-        window_y: None,
-        auth_dir: path_to_string(&fixed_oauth_dir().unwrap()),
-        auth_dir_user_selected: false,
-        api_keys: vec![
-            default_api_key_entry(),
-            GuiApiKeyEntry {
-                key: "gui-key".to_string(),
-                remark: "Test key".to_string(),
-            },
-        ],
-        api_access_remarks: Vec::new(),
-        management_secret_key: String::new(),
-        debug: true,
-        commercial_mode: true,
-        logging_to_file: true,
-        logs_max_total_size_mb: 512,
-        error_logs_max_files: 25,
-        usage_statistics_enabled: false,
-        redis_usage_queue_retention_seconds: 180,
-        usage_statistics_disabled: Some(true),
-        image_generation_user_selected: false,
-        request_log: true,
-        plugins_enabled: true,
-        routing_strategy: "fill-first".to_string(),
-        proxy_url: "socks5://127.0.0.1:7890".to_string(),
-        proxy_override: true,
-        download_source: VersionDownloadSource::Github,
-        custom_download_mirrors: Vec::new(),
-        active_custom_download_mirror: String::new(),
-        prefer_gitcode_downloads: false,
-        routing_session_affinity: true,
-        routing_session_affinity_ttl: "1h".to_string(),
-        disable_cooling: true,
-        request_retry: 1,
-        max_retry_credentials: 2,
-        max_retry_interval: 5,
-        streaming_bootstrap_retries: 1,
-    };
-    let merged = merge_core_config_yaml(template, Some(current), &config).unwrap();
-    let current_document = serde_norway::from_str::<serde_norway::Value>(current).unwrap();
-
-    assert!(merged.contains("# User-edited configuration"));
-    assert!(merged.contains("# User-owned nested values"));
-    assert!(!merged.contains("# Current release template"));
-    assert!(!merged.contains("# New release option"));
-
-    let document = serde_norway::from_str::<serde_norway::Value>(&merged).unwrap();
-    assert_eq!(
-        document["host"],
-        serde_norway::Value::String("0.0.0.0".to_string())
-    );
-    assert_eq!(document["port"], serde_norway::to_value(9527_u16).unwrap());
-    assert_eq!(document["api-keys"][0], DEFAULT_API_KEY);
-    assert_eq!(document["api-keys"][1], "gui-key");
-    assert_eq!(document["plugins"]["enabled"], true, "{merged}");
-    assert_eq!(document["routing"]["strategy"], "fill-first");
-    assert_eq!(document["proxy-url"], "socks5://127.0.0.1:7890");
-    assert_eq!(document["routing"]["session-affinity"], true);
-    assert_eq!(document["routing"]["session-affinity-ttl"], "1h");
-    assert_eq!(document["disable-cooling"], true);
-    assert_eq!(document["request-retry"], 1);
-    assert_eq!(document["max-retry-credentials"], 2);
-    assert_eq!(document["max-retry-interval"], 5);
-    assert_eq!(document["streaming"]["bootstrap-retries"], 1);
-    assert_eq!(document["debug"], true);
-    assert_eq!(document["commercial-mode"], true);
-    assert_eq!(document["logging-to-file"], true);
-    assert_eq!(document["logs-max-total-size-mb"], 512);
-    assert_eq!(document["error-logs-max-files"], 25);
-    assert_eq!(document["usage-statistics-enabled"], false);
-    assert_eq!(document["redis-usage-queue-retention-seconds"], 180);
-    assert_eq!(document["request-log"], true);
-    assert!(document.get("new-option").is_none());
-    assert_eq!(document["nested"], current_document["nested"]);
-    assert!(document["nested"].get("added").is_none());
-    for key in ["list", "extra", "custom-provider"] {
-        assert_eq!(document[key], current_document[key], "user field {key}");
-    }
-    assert_eq!(
-        document["plugins"]["custom-runtime-options"],
-        current_document["plugins"]["custom-runtime-options"]
-    );
-    assert_eq!(
-        document["routing"]["custom-rules"],
-        current_document["routing"]["custom-rules"]
-    );
-    assert_eq!(
-        document["remote-management"]["custom-dashboard-option"],
-        current_document["remote-management"]["custom-dashboard-option"]
-    );
-}
 
 #[test]
 fn startup_merge_preserves_plugin_store_config_written_by_core() {

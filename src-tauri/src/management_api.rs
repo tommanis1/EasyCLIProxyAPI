@@ -600,18 +600,6 @@ pub(crate) async fn read_management_value(
     }
 }
 
-pub(crate) async fn read_management_text(response: reqwest::Response) -> Result<String, String> {
-    let status = response.status();
-    let text = response
-        .text()
-        .await
-        .map_err(|err| format_management_request_error("Failed to read management API response", &err))?;
-    if !status.is_success() {
-        return Err(format_management_error(status.as_u16(), &text));
-    }
-    Ok(text)
-}
-
 fn format_management_error(status: u16, body: &str) -> String {
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(body) {
         let field = |key| {

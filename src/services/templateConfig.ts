@@ -35,7 +35,6 @@ export type TemplateConfigChange = {
   expected: unknown;
   expectedExists: boolean;
 };
-export type TemplateConfigSaveResult = { config: Record<string, unknown>; restartRequired: boolean };
 export type TemplateConfigDraft = Omit<TemplateConfigChange, 'path'>;
 
 export const templateFieldKey = (path: readonly string[]) => JSON.stringify(path);
@@ -102,9 +101,3 @@ export function templateFieldSaveValue(field: TemplateConfigField, value: unknow
   if (field.type === 'json' && typeof value === 'string') return JSON.parse(value);
   return value;
 }
-
-export const getExtendedCoreConfig = (): Promise<Record<string, unknown>> =>
-  invoke<Record<string, unknown>>('get_extended_core_config');
-
-export const saveExtendedCoreConfig = (args: { changes: TemplateConfigChange[]; }): Promise<TemplateConfigSaveResult> =>
-  invoke<TemplateConfigSaveResult>('save_extended_core_config', args);

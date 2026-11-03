@@ -5655,7 +5655,6 @@ mod tests {
             start_core_on_launch: true,
             silent_start: false,
             close_behavior: crate::WindowsCloseBehavior::Ask,
-            default_terminal: crate::DEFAULT_AGENT_TERMINAL.to_string(),
             window_width: None,
             window_height: None,
             window_x: None,

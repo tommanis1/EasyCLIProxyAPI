@@ -10,31 +10,6 @@ pub(crate) fn get_core_tls_settings() -> Result<CoreTlsSettings, String> {
     current_core_tls_settings()
 }
 
-#[tauri::command]
-pub(crate) fn save_core_tls_settings(
-    cache: tauri::State<'_, AgentConfigStatusCache>,
-    settings: CoreTlsSettings,
-) -> Result<CoreTlsSettings, String> {
-    let settings = normalize_core_tls_settings(settings)?;
-    patch_core_tls_settings(&settings)?;
-    cache.clear()?;
-    Ok(settings)
-}
-
-#[tauri::command]
-pub(crate) fn get_core_sensitive_words_settings() -> Result<CoreSensitiveWordsSettings, String> {
-    read_core_sensitive_words_settings()
-}
-
-#[tauri::command]
-pub(crate) fn save_core_sensitive_words_settings(
-    settings: CoreSensitiveWordsSettings,
-) -> Result<CoreSensitiveWordsSettings, String> {
-    let normalized = normalize_core_sensitive_words_settings(settings);
-    patch_core_sensitive_words_settings(&normalized)?;
-    Ok(normalized)
-}
-
 pub(crate) fn detect_lan_ipv4() -> Option<Ipv4Addr> {
     for target in ["192.0.2.1:80", "8.8.8.8:80"] {
         let Ok(socket) = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)) else {
@@ -59,17 +34,12 @@ pub(crate) fn detect_lan_ipv4() -> Option<Ipv4Addr> {
 #[tauri::command]
 pub(crate) fn save_gui_settings(
     gui_config_state: tauri::State<'_, GuiConfigState>,
-    cache: tauri::State<'_, AgentConfigStatusCache>,
     settings: GuiNetworkSettings,
 ) -> Result<GuiSettings, String> {
     if settings.port == 0 {
         return Err("Port must be between 1 and 65535".to_string());
     }
 
-    let _refresh_guard = cache
-        .refresh_lock
-        .lock()
-        .map_err(|_| "Agent configuration status refresh lock is poisoned".to_string())?;
     let previous = gui_config_state.snapshot()?;
     let mut next = previous.clone();
     next.port = settings.port;
@@ -94,19 +64,12 @@ pub(crate) fn save_gui_settings(
         }
     };
 
-    if config.port != previous.port {
-        if let Err(error) = cache.clear() {
-            eprintln!("Failed to clear agent configuration status cache: {error}");
-        }
-    }
-
     Ok(GuiSettings::from(&config))
 }
 
 #[tauri::command]
 pub(crate) fn save_network_routing_settings(
     gui_config_state: tauri::State<'_, GuiConfigState>,
-    cache: tauri::State<'_, AgentConfigStatusCache>,
     settings: GuiNetworkRoutingSettings,
 ) -> Result<CoreConfigView, String> {
     if settings.port == 0 {
@@ -115,10 +78,6 @@ pub(crate) fn save_network_routing_settings(
     let routing_session_affinity_ttl =
         normalize_session_affinity_ttl(settings.routing_session_affinity_ttl)?;
 
-    let _refresh_guard = cache
-        .refresh_lock
-        .lock()
-        .map_err(|_| "Agent configuration status refresh lock is poisoned".to_string())?;
     let previous = gui_config_state.snapshot()?;
     let mut next = previous.clone();
     next.port = settings.port;
@@ -147,107 +106,6 @@ pub(crate) fn save_network_routing_settings(
         }
     };
 
-    if config.port != previous.port {
-        if let Err(error) = cache.clear() {
-            eprintln!("Failed to clear agent configuration status cache: {error}");
-        }
-    }
-
-    Ok(CoreConfigView::from(&config))
-}
-
-#[tauri::command]
-pub(crate) fn save_network_endpoint_settings(
-    gui_config_state: tauri::State<'_, GuiConfigState>,
-    cache: tauri::State<'_, AgentConfigStatusCache>,
-    settings: GuiNetworkEndpointSettings,
-) -> Result<CoreConfigView, String> {
-    if settings.port == 0 {
-        return Err("Port must be between 1 and 65535".to_string());
-    }
-    let host = normalize_optional_config_string(settings.host, "Listen IP")?;
-    if !host.is_empty() && !host.eq_ignore_ascii_case("localhost") && host.parse::<IpAddr>().is_err() {
-        return Err("Listen address must be empty, localhost, or a valid IPv4 or IPv6 address".to_string());
-    }
-    let previous = gui_config_state.snapshot()?;
-    let mut next = previous.clone();
-    next.host = host;
-    next.allow_lan = !is_loopback_host(&next.host);
-    next.port = settings.port;
-    if settings.proxy_url.is_some() || settings.proxy_override.is_some() {
-        let proxy_url = network_proxy::normalize_optional_proxy_url(
-            settings.proxy_url.as_deref().unwrap_or(&next.proxy_url),
-        )?;
-        // Explicit mode selection lets an empty manual URL mean direct access.
-        // Calls from older frontends keep the legacy behavior where an empty URL
-        // means following the system proxy.
-        next.proxy_override = settings
-            .proxy_override
-            .unwrap_or_else(|| !proxy_url.is_empty());
-        next.proxy_url = if next.proxy_override {
-            proxy_url
-        } else {
-            network_proxy::detect()
-        };
-    }
-    validate_gui_config(&next)?;
-    patch_core_network_endpoint_settings(&next)?;
-    let config = match gui_config_state.update_network_endpoint(&next) {
-        Ok(config) => config,
-        Err(error) => {
-            let rollback_error = patch_core_network_endpoint_settings(&previous).err();
-            return Err(config_update_error_with_rollback(error, rollback_error));
-        }
-    };
-    if config.host != previous.host || config.port != previous.port {
-        if let Err(error) = cache.clear() {
-            eprintln!("Failed to clear agent configuration status cache: {error}");
-        }
-    }
-    Ok(CoreConfigView::from(&config))
-}
-
-#[tauri::command]
-pub(crate) fn save_retry_settings(
-    gui_config_state: tauri::State<'_, GuiConfigState>,
-    settings: GuiRetrySettings,
-) -> Result<CoreConfigView, String> {
-    let previous = gui_config_state.snapshot()?;
-    let mut next = previous.clone();
-    next.disable_cooling = settings.disable_cooling;
-    next.request_retry = settings.request_retry;
-    next.max_retry_credentials = settings.max_retry_credentials;
-    next.max_retry_interval = settings.max_retry_interval;
-    next.streaming_bootstrap_retries = settings.streaming_bootstrap_retries;
-    patch_core_retry_settings(&next)?;
-    let config = match gui_config_state.update_retry_settings(&next) {
-        Ok(config) => config,
-        Err(error) => {
-            let rollback_error = patch_core_retry_settings(&previous).err();
-            return Err(config_update_error_with_rollback(error, rollback_error));
-        }
-    };
-    Ok(CoreConfigView::from(&config))
-}
-
-#[tauri::command]
-pub(crate) fn save_session_routing_settings(
-    gui_config_state: tauri::State<'_, GuiConfigState>,
-    settings: GuiSessionRoutingSettings,
-) -> Result<CoreConfigView, String> {
-    let ttl = normalize_session_affinity_ttl(settings.routing_session_affinity_ttl)?;
-    let previous = gui_config_state.snapshot()?;
-    let mut next = previous.clone();
-    next.routing_session_affinity = settings.routing_session_affinity;
-    next.routing_session_affinity_ttl = ttl;
-    patch_core_session_routing_settings(&next)?;
-    let config = match gui_config_state.update_session_routing(&next) {
-        Ok(config) => config,
-        Err(error) => {
-            let rollback_error = patch_core_session_routing_settings(&previous).err();
-            return Err(config_update_error_with_rollback(error, rollback_error));
-        }
-    };
     Ok(CoreConfigView::from(&config))
 }
 
@@ -261,36 +119,6 @@ pub(crate) fn get_core_config_settings(
     if api_keys != settings.api_keys {
         patch_core_api_keys(&api_keys)?;
     }
-    Ok(CoreConfigView::from(&config))
-}
-
-#[tauri::command]
-pub(crate) fn save_core_logging_settings(
-    gui_config_state: tauri::State<'_, GuiConfigState>,
-    settings: CoreLoggingSettingsInput,
-) -> Result<CoreConfigView, String> {
-    if !(1..=3600).contains(&settings.redis_usage_queue_retention_seconds) {
-        return Err("Redis usage queue retention must be between 1 and 3600 seconds".to_string());
-    }
-
-    let previous = current_core_config_settings(gui_config_state.inner())?;
-    let mut next = previous.clone();
-    next.debug = settings.debug;
-    next.commercial_mode = settings.commercial_mode;
-    next.logging_to_file = settings.logging_to_file;
-    next.logs_max_total_size_mb = settings.logs_max_total_size_mb;
-    next.error_logs_max_files = settings.error_logs_max_files;
-    next.usage_statistics_enabled = settings.usage_statistics_enabled;
-    next.redis_usage_queue_retention_seconds = settings.redis_usage_queue_retention_seconds;
-
-    patch_core_logging_settings(&next)?;
-    let config = match gui_config_state.sync_core_logging_settings(&next) {
-        Ok(config) => config,
-        Err(error) => {
-            let rollback_error = patch_core_logging_settings(&previous).err();
-            return Err(config_update_error_with_rollback(error, rollback_error));
-        }
-    };
     Ok(CoreConfigView::from(&config))
 }
 
@@ -400,42 +228,6 @@ pub(crate) fn delete_core_api_key(
 }
 
 #[tauri::command]
-pub(crate) fn set_core_management_secret_key(
-    gui_config_state: tauri::State<'_, GuiConfigState>,
-    secret_key: String,
-) -> Result<CoreConfigView, String> {
-    let secret_key = normalize_management_secret_key(secret_key)?;
-    let previous = gui_config_state.snapshot()?;
-    patch_core_management_secret_key(&secret_key)?;
-    let config = match gui_config_state.set_management_secret_key(secret_key) {
-        Ok(config) => config,
-        Err(error) => {
-            let rollback_error =
-                patch_core_management_secret_key(&previous.management_secret_key).err();
-            return Err(config_update_error_with_rollback(error, rollback_error));
-        }
-    };
-    Ok(CoreConfigView::from(&config))
-}
-
-#[tauri::command]
-pub(crate) fn clear_core_management_secret_key(
-    gui_config_state: tauri::State<'_, GuiConfigState>,
-) -> Result<CoreConfigView, String> {
-    let previous = gui_config_state.snapshot()?;
-    patch_core_management_secret_key("")?;
-    let config = match gui_config_state.set_management_secret_key(String::new()) {
-        Ok(config) => config,
-        Err(error) => {
-            let rollback_error =
-                patch_core_management_secret_key(&previous.management_secret_key).err();
-            return Err(config_update_error_with_rollback(error, rollback_error));
-        }
-    };
-    Ok(CoreConfigView::from(&config))
-}
-
-#[tauri::command]
 pub(crate) fn set_core_plugins_enabled(
     gui_config_state: tauri::State<'_, GuiConfigState>,
     enabled: bool,
@@ -463,19 +255,6 @@ pub(crate) fn set_core_request_log(
             return Err(config_update_error_with_rollback(error, rollback_error));
         }
     };
-    Ok(CoreConfigView::from(&config))
-}
-
-#[tauri::command]
-pub(crate) fn set_core_routing_strategy(
-    gui_config_state: tauri::State<'_, GuiConfigState>,
-    strategy: String,
-) -> Result<CoreConfigView, String> {
-    validate_routing_strategy(&strategy)?;
-    let mut settings = current_core_config_settings(gui_config_state.inner())?;
-    settings.routing_strategy = strategy;
-    patch_core_routing_strategy(&settings.routing_strategy)?;
-    let config = gui_config_state.sync_core_settings(&settings)?;
     Ok(CoreConfigView::from(&config))
 }
 

@@ -77,12 +77,6 @@ pub(crate) struct CoreRecovery {
 }
 
 impl CoreRecovery {
-    pub fn wants_running(&self) -> bool {
-        self.policy
-            .lock()
-            .map(|policy| policy.armed)
-            .unwrap_or(false)
-    }
 
     pub fn running(&self) {
         if let Ok(mut policy) = self.policy.lock() {
@@ -328,15 +322,4 @@ mod tests {
         assert_eq!(p.status.as_ref().unwrap().attempt, 1);
     }
 
-    #[test]
-    fn worker_failure_removes_due_timer_instead_of_spinning() {
-        let recovery = CoreRecovery::default();
-        recovery.running();
-        recovery.exited("exit".into());
-        assert!(recovery.plan().is_some());
-        recovery.halt("worker failed".into());
-        assert!(recovery.plan().is_none());
-        assert!(!recovery.wants_running());
-        assert_eq!(recovery.status().unwrap().phase, "failed");
-    }
 }

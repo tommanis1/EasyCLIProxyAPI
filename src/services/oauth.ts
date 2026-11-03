@@ -34,6 +34,3 @@ export const submitOAuthCallback = (args: { provider: string; redirectUrl: strin
 
 export const listOAuthBrowsers = (): Promise<OAuthBrowserOption[]> =>
   invoke<OAuthBrowserOption[]>('list_oauth_browsers');
-
-export const checkCodexOAuthLogin = (): Promise<void> =>
-  invoke<void>('check_codex_oauth_login');

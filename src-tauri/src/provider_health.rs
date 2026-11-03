@@ -1,7 +1,6 @@
 use super::{
-    build_http_client_with_proxy, effective_agent_api_key, fetch_agent_model_payload, is_loopback_host,
-    managed_core_loopback_origin, managed_core_tls_enabled, usage, validate_agent_model,
-    GuiConfigFile, GuiConfigState, APP_USER_AGENT,
+    build_http_client_with_proxy, effective_agent_api_key, is_loopback_host,
+    managed_core_loopback_origin, managed_core_tls_enabled, usage, truncate_for_error, USER_AGENT, GuiConfigState, APP_USER_AGENT,
 };
 use chrono::Local;
 use futures_util::StreamExt;
@@ -342,7 +341,7 @@ pub(crate) struct CoreHealthModel {
 }
 
 async fn fetch_core_models(port: u16, api_key: &str) -> Result<Vec<CoreHealthModel>, String> {
-    let payload = fetch_agent_model_payload(port, api_key).await?;
+    let payload = fetch_model_list(port, api_key).await?;
     parse_core_models(&payload)
 }
 
@@ -381,60 +380,6 @@ fn parse_core_models(payload: &serde_json::Value) -> Result<Vec<CoreHealthModel>
         models.push(CoreHealthModel { name: name.to_string(), display_name });
     }
     Ok(models)
-}
-
-#[tauri::command]
-pub(crate) async fn core_health_probe(
-    gui_config_state: tauri::State<'_, GuiConfigState>,
-    model: String,
-    timeout_ms: Option<u64>,
-) -> Result<ProviderHealthProbeResponse, String> {
-    let config = gui_config_state.snapshot()?;
-    probe_core_model(&config, &model, timeout_ms).await
-}
-
-async fn probe_core_model(
-    config: &GuiConfigFile,
-    model: &str,
-    timeout_ms: Option<u64>,
-) -> Result<ProviderHealthProbeResponse, String> {
-    let model = validate_agent_model(model)?;
-    if config.port == 0 {
-        return Err("Invalid kernel port".to_string());
-    }
-    let tls_enabled = managed_core_tls_enabled();
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(3))
-        .timeout(health_probe_timeout(timeout_ms))
-        .danger_accept_invalid_certs(tls_enabled)
-        .build()
-        .map_err(|error| format!("Failed to create kernel health check client: {error}"))?;
-    let request = ProviderHealthProbeRequest {
-        url: format!("{}/v1/chat/completions", managed_core_loopback_origin(config.port)),
-        header: HashMap::from([
-            ("Authorization".to_string(), format!("Bearer {}", effective_agent_api_key(config))),
-            ("Content-Type".to_string(), "application/json".to_string()),
-            ("Accept".to_string(), "text/event-stream".to_string()),
-        ]),
-        data: serde_json::json!({
-            "model": model,
-            "messages": [{ "role": "user", "content": "Reply with OK." }],
-            "max_tokens": 16,
-            "stream": true,
-        }).to_string(),
-        protocol: "openai-chat".to_string(),
-        source_provider: None,
-        proxy_url: None,
-        timeout_ms,
-        model,
-        source: String::new(),
-        auth_index: String::new(),
-    };
-    // The kernel records these requests itself. Only direct upstream probes need a
-    // desktop usage event, otherwise one health check appears twice in usage.
-    execute_health_probe(None, client, request).await
 }
 
 fn health_probe_timeout(timeout_ms: Option<u64>) -> Duration {
@@ -574,3 +519,85 @@ async fn execute_health_probe(
     }
     Err("Health check did not receive the model's first token".to_string())
 }
+
+async fn fetch_model_list(
+    port: u16,
+    api_key: &str,
+) -> Result<serde_json::Value, String> {
+    if port == 0 {
+        return Err("Invalid kernel port".to_string());
+    }
+    let tls_enabled = managed_core_tls_enabled();
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .connect_timeout(Duration::from_secs(3))
+        .timeout(Duration::from_secs(15))
+        .danger_accept_invalid_certs(tls_enabled)
+        .build()
+        .map_err(|error| format!("Failed to create model list client: {error}"))?;
+    let base_url = managed_core_loopback_origin(port);
+    let endpoints = [
+        format!("{base_url}/v1/models"),
+        format!("{base_url}/models"),
+    ];
+
+    for (index, endpoint) in endpoints.iter().enumerate() {
+        let response = client
+            .get(endpoint)
+            .bearer_auth(api_key)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .header(reqwest::header::USER_AGENT, USER_AGENT)
+            .send()
+            .await
+            .map_err(|error| format!("Failed to request local model list: {error}"))?;
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .map_err(|error| format!("Failed to read local model list: {error}"))?;
+        if status.is_success() {
+            let payload = serde_json::from_str::<serde_json::Value>(&body).map_err(|error| {
+                format!(
+                    "Failed to parse local model list: {error}; body={}",
+                    truncate_for_error(&body)
+                )
+            })?;
+            return Ok(payload);
+        }
+
+        let can_try_legacy_path = index == 0 && matches!(status.as_u16(), 404 | 405);
+        if !can_try_legacy_path {
+            return Err(format_model_list_error(status.as_u16(), &body));
+        }
+    }
+
+    Err("Local kernel does not support the model list endpoint".to_string())
+}
+
+fn format_model_list_error(status: u16, body: &str) -> String {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(body) {
+        let message = value
+            .get("error")
+            .and_then(|error| {
+                error
+                    .as_str()
+                    .or_else(|| error.get("message").and_then(serde_json::Value::as_str))
+            })
+            .or_else(|| value.get("message").and_then(serde_json::Value::as_str))
+            .map(str::trim)
+            .filter(|message| !message.is_empty());
+        if let Some(message) = message {
+            return format!("Failed to get local model list ({status}): {message}");
+        }
+    }
+    let body = body.trim();
+    if body.is_empty() {
+        format!("Failed to get local model list ({status})")
+    } else {
+        format!(
+            "Failed to get local model list ({status}): {}",
+            truncate_for_error(body)
+        )
+    }
+}
+

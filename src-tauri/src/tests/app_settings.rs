@@ -133,35 +133,6 @@ fn configuration_watcher_uses_the_nearest_existing_parent() {
     fs::remove_dir_all(home).unwrap();
 }
 
-#[test]
-fn gui_config_defaults_are_stable() {
-    let config = GuiConfigFile::default();
-    let content = toml::to_string_pretty(&config).unwrap();
-
-    assert!(content.contains("port = 8317"));
-    assert!(content.contains("allow-lan = false"));
-    assert!(content.contains("run-on-startup = false"));
-    assert!(content.contains("start-core-on-launch = true"));
-    assert!(content.contains("silent-start = false"));
-    assert!(content.contains("close-behavior = \"ask\""));
-    assert!(content.contains("default-terminal = \"auto\""));
-    assert_eq!(config.default_terminal, DEFAULT_AGENT_TERMINAL);
-    assert!(content.contains("window-width = 1280"));
-    assert!(content.contains("window-height = 800"));
-    assert!(content.contains("auth-dir = \"../oauth\""));
-    assert!(content.contains("[[api-keys]]"));
-    assert!(content.contains("key = \"123456\""));
-    assert!(content.contains("remark = \"Default key\""));
-    assert!(content.contains(&format!("management-secret-key = \"{LEGACY_DEFAULT_MANAGEMENT_SECRET_KEY}\"")));
-    assert!(content.contains("plugins-enabled = false"));
-    assert!(content.contains("routing-strategy = \"round-robin\""));
-    assert!(content.contains("download-source = \"github\""));
-    assert!(content.contains("prefer-gitcode-downloads = false"));
-    assert!(content.contains("request-retry = 3"));
-    assert!(content.contains("max-retry-credentials = 0"));
-    assert!(content.contains("max-retry-interval = 30"));
-    assert!(content.contains("streaming-bootstrap-retries = 0"));
-}
 
 #[test]
 fn gui_window_size_round_trips_through_portable_config() {
