@@ -1,9 +1,9 @@
 use super::{
-    agent_managed_paths, apply_gui_managed_settings, consume_software_write,
+    apply_gui_managed_settings, consume_software_write,
     core_config_settings_from_value, core_install_dir, gui_config_path, is_loopback_host,
     lock_core_config_file, normalized_config_path, path_to_string,
-    refresh_agent_config_status_cache, request_codex_model_catalog_refresh, validate_gui_config,
-    write_core_config_if_changed, AgentClient, AgentConfigStatusCache, ConfigFilesChangedPayload,
+    validate_gui_config,
+    write_core_config_if_changed, ConfigFilesChangedPayload,
     CoreConfigSettings, GuiConfigFile, GuiConfigState, CONFIG_FILES_CHANGED_EVENT,
     CORE_CONFIG_FILE,
 };
@@ -56,32 +56,12 @@ fn patch_core_from_gui_config_if_valid(config: &GuiConfigFile) -> Result<(), Str
     write_core_config_if_changed(&path, &updated).map(|_| ())
 }
 
-fn tracked_configuration_paths(app: &tauri::AppHandle) -> Result<Vec<PathBuf>, String> {
-    let home = app
-        .path()
-        .home_dir()
-        .map_err(|error| format!("Failed to get user directory: {error}"))?;
+// The app's own settings and the core's config.yaml; client (agent) configuration files are not the app's.
+fn tracked_configuration_paths(_app: &tauri::AppHandle) -> Result<Vec<PathBuf>, String> {
     let mut paths = vec![
         gui_config_path()?,
         core_install_dir()?.join(CORE_CONFIG_FILE),
     ];
-    for client in [
-        AgentClient::ClaudeCode,
-        AgentClient::ClaudeDesktop,
-        AgentClient::Codex,
-        AgentClient::OpenCode,
-        AgentClient::OpenClaw,
-        AgentClient::Hermes,
-        AgentClient::DeepSeekHarness,
-        AgentClient::ZCode,
-        AgentClient::WorkBuddy,
-        AgentClient::AntigravityCli,
-        AgentClient::KimiCode,
-        AgentClient::GrokBuild,
-        AgentClient::Omp,
-    ] {
-        paths.extend(agent_managed_paths(client, &home));
-    }
     paths.sort();
     paths.dedup();
     Ok(paths)
@@ -97,10 +77,8 @@ fn handle_configuration_file_changes(
         .ok()
         .map(|path| path.join(CORE_CONFIG_FILE));
     let gui_state = app.state::<GuiConfigState>();
-    let cache = app.state::<AgentConfigStatusCache>();
     let mut payload_paths = Vec::new();
     let mut errors = Vec::new();
-    let mut refresh_agents = false;
     let mut tracked_changes: Vec<PathBuf> = Vec::new();
 
     for path in changed_paths {
@@ -135,7 +113,6 @@ fn handle_configuration_file_changes(
         .iter()
         .any(|path| is_gui_path(path) || is_core_path(path))
     {
-        refresh_agents = true;
         let mut preserve_invalid_gui_file = false;
         let mut preserve_invalid_core_file = false;
         for tracked_path in tracked_changes.iter().rev() {
@@ -167,7 +144,6 @@ fn handle_configuration_file_changes(
                     if !preserve_invalid_core_file {
                         patch_core_from_gui_config_if_valid(&config)?;
                     }
-                    cache.clear()?;
                     Ok(())
                 })();
                 if let Err(error) = result {
@@ -199,7 +175,6 @@ fn handle_configuration_file_changes(
                     } else {
                         gui_state.sync_core_settings_external(&settings)?;
                     }
-                    cache.clear()?;
                     Ok(())
                 })();
                 if let Err(error) = result {
@@ -209,19 +184,8 @@ fn handle_configuration_file_changes(
             }
         }
 
-        request_codex_model_catalog_refresh();
     }
 
-    refresh_agents |= tracked_changes
-        .iter()
-        .any(|path| !is_gui_path(path) && !is_core_path(path));
-
-    if refresh_agents {
-        if let Err(error) = refresh_agent_config_status_cache(app, gui_state.inner(), cache.inner())
-        {
-            errors.push(error);
-        }
-    }
     if !payload_paths.is_empty() || !errors.is_empty() {
         let _ = app.emit(
             CONFIG_FILES_CHANGED_EVENT,

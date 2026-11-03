@@ -9,26 +9,16 @@ import { LoaderCircle, Play, RefreshCw, RotateCw, Square } from 'lucide-react';
 import { useCoreRuntime } from '../coreRuntime';
 import { clientApiProfiles } from '../services/clientAccess';
 import { useI18n } from '../i18n';
-import { useAppUpdate } from '../appUpdate';
 import { FloatingNotice, useAppNotice } from '../appNotice';
-import { VersionManagementPage, displayAppVersion } from './VersionManagementPage';
 import { HomeAccessPanel } from './HomeAccessPanel';
 import { HomeOverviewCards } from './HomeOverviewCards';
-import { CoreHealthPanel } from './CoreHealthPanel';
 import { useHomeOverview } from './useHomeOverview';
 import './HomeDashboard.css';
 
 type CoreProcessCommand = 'start_core_process' | 'stop_core_process' | 'restart_core_process';
 
-export type KernelView = 'home' | 'versions';
-
-export function KernelPage({ view = 'home' }: { view?: KernelView }) {
-  if (view === 'versions') {
-    return <VersionManagementPage />;
-  }
-
+export function KernelPage() {
   const { t } = useI18n();
-  const { info: appUpdate } = useAppUpdate();
   const {
     status: coreStatus,
     statusError,
@@ -190,9 +180,8 @@ export function KernelPage({ view = 'home' }: { view?: KernelView }) {
               ? t('kernel.status.running')
               : t(coreInstalled ? 'kernel.status.stopped' : 'kernel.status.notInstalled');
 
-  const resolvedAppVersion = appUpdate?.currentVersion || installedAppVersion;
-  const currentAppVersion = resolvedAppVersion
-    ? displayAppVersion(resolvedAppVersion)
+  const currentAppVersion = installedAppVersion
+    ? (installedAppVersion.startsWith('v') ? installedAppVersion : `v${installedAppVersion}`)
     : t('common.detecting');
 
   const apiPort = Number(customPort);
@@ -208,12 +197,7 @@ export function KernelPage({ view = 'home' }: { view?: KernelView }) {
 
   return (
     <section className="page kernel-page home-page home-dashboard" aria-label={t('app.nav.home')}>
-      <HomeOverviewCards snapshot={overview.snapshot} loading={overview.loading} coreReady={coreReady} onRefresh={overview.refresh} actions={<CoreHealthPanel compact
-        coreReady={coreReady} models={overview.snapshot?.models ?? []}
-        modelsLoading={overview.loading}
-        modelsError={overview.snapshot?.errors.models ?? ''}
-        onRefreshModels={overview.refresh} contextKey={healthContext}
-      />} />
+      <HomeOverviewCards snapshot={overview.snapshot} loading={overview.loading} coreReady={coreReady} onRefresh={overview.refresh} />
       <div className="home-top-grid">
         <div className="panel surface-panel control-panel">
           <div className="panel-heading home-panel-heading">

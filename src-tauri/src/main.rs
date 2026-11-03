@@ -2663,15 +2663,6 @@ fn main() {
             if let Err(error) = network_proxy::refresh(app.state::<GuiConfigState>().inner()) {
                 eprintln!("Failed to read startup proxy settings: {error}");
             }
-            if let Err(error) = codex_catalog::validate_embedded_catalog() {
-                eprintln!("Invalid bundled Codex model catalog: {error}");
-            }
-            if let Err(error) = load_codex_model_catalog_override(app.handle()) {
-                eprintln!("Failed to load Codex model catalog update file; using bundled catalog: {error}");
-            }
-            if let Err(error) = load_codex_model_customizations(app.handle()) {
-                eprintln!("Failed to load Codex custom model configuration: {error}");
-            }
             if let Err(error) = restore_main_window_geometry(app.handle()) {
                 eprintln!("{error}");
             }
@@ -2702,7 +2693,6 @@ fn main() {
 
             network_proxy::start_monitor(app.handle().clone());
             core_recovery::start(app.handle().clone());
-            start_codex_model_catalog_sync(app.handle().clone());
 
             let usage_app = app.handle().clone();
             tauri::async_runtime::spawn_blocking(move || {
@@ -2712,18 +2702,6 @@ fn main() {
                 usage::start_usage_collector(usage_app);
             });
 
-            let agent_status_app = app.handle().clone();
-            tauri::async_runtime::spawn_blocking(move || {
-                let gui_config_state = agent_status_app.state::<GuiConfigState>();
-                let cache = agent_status_app.state::<AgentConfigStatusCache>();
-                if let Err(error) = refresh_agent_config_status_cache(
-                    &agent_status_app,
-                    gui_config_state.inner(),
-                    cache.inner(),
-                ) {
-                    eprintln!("Failed to refresh agent configuration status in the background: {error}");
-                }
-            });
 
             let core_app = app.handle().clone();
             tauri::async_runtime::spawn_blocking(move || {
@@ -2819,56 +2797,7 @@ fn main() {
             resolve_windows_close_request,
             get_software_settings,
             save_software_settings,
-            get_agent_config_statuses,
-            create_agent_config_backup,
-            list_agent_config_backups,
-            preview_agent_config_backup,
-            restore_agent_config_backup,
-            delete_agent_config_backup,
-            preview_agent_config_template,
-            apply_agent_config_template,
-            refresh_agent_config_statuses,
-            get_agent_models,
-            check_pi_provider_update,
-            install_pi_provider,
-            update_pi_provider,
-            repair_pi_provider,
-            uninstall_pi_provider,
             check_codex_oauth_login,
-            update_codex_model_catalog,
-            get_deepseek_harness_model_catalog_editor,
-            save_deepseek_harness_model_catalog_editor,
-            get_codex_model_catalog_editor,
-            save_codex_model_catalog_editor,
-            get_thinking_aliases,
-            get_model_alias_sources,
-            get_model_alias_edit_source,
-            get_thinking_alias_sources,
-            create_thinking_alias,
-            delete_thinking_alias,
-            get_speed_aliases,
-            get_speed_alias_sources,
-            create_speed_alias,
-            delete_speed_alias,
-            apply_agent_config,
-            clear_codex_config,
-            restore_codex_official_config,
-            set_codex_openai_provider,
-            set_codex_remote_compaction,
-            get_codex_subagent_config,
-            save_codex_subagent_config,
-            close_codex_config_modification,
-            set_agent_config_enabled,
-            update_agent_config,
-            launch_agent,
-            get_deepseek_harness_process_status,
-            stop_deepseek_harness_process,
-            restart_deepseek_harness_process,
-            restart_agent_app,
-            restart_codex_app,
-            restart_opencode_app,
-            get_codex_cli_daemon_running,
-            restart_codex_cli_daemon,
             get_lan_ipv4,
             save_gui_settings,
             save_network_routing_settings,
@@ -2901,7 +2830,6 @@ fn main() {
             plugins::get_plugin_latest_releases,
             provider_health::provider_health_probe,
             provider_health::get_core_models,
-            provider_health::core_health_probe,
             management_api::upload_auth_file,
             management_api::import_vertex_credential,
             management_api::open_auth_files_directory,
@@ -2917,21 +2845,6 @@ fn main() {
             list_oauth_browsers,
             open_oauth_url,
             open_external_url,
-            get_version_source_settings,
-            set_download_source,
-            add_custom_download_mirror,
-            remove_custom_download_mirror,
-            set_prefer_gitcode_downloads,
-            check_app_update,
-            get_app_update_task,
-            start_app_update,
-            cancel_app_update,
-            check_latest_core,
-            detect_bundled_core,
-            install_core_version,
-            install_bundled_core,
-            cancel_core_install,
-            get_core_install_task,
             usage::get_usage_collector_status,
             usage::get_usage_overview,
             usage::get_usage_analysis,
@@ -2949,14 +2862,6 @@ fn main() {
             start_core_process,
             stop_core_process,
             restart_core_process,
-            codex_sessions::list_codex_sessions,
-            codex_sessions::delete_codex_sessions,
-            codex_sessions::repair_codex_session_metadata,
-            codex_sessions::preview_codex_session_index_cleanup,
-            codex_sessions::apply_codex_session_index_cleanup,
-            codex_sessions::context::get_codex_session_context,
-            codex_sessions::context::save_codex_session_context,
-            codex_sessions::context::open_codex_session_rollout
         ])
         .build(context)
         .expect("failed to build app");

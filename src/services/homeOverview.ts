@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { dedupeAuthFiles, isOAuthCredentialFile } from './authFiles';
 import { authFileHealth, normalizeAuthFileCooldowns } from './authFileHealth';
-import type { CoreHealthModel } from './coreHealthCheck';
+export type CoreHealthModel = { name: string; displayName?: string };
 import { isRecord, managementApi, readBoolean, readString } from './managementApi';
 
 export type HomeUsageSummary = {

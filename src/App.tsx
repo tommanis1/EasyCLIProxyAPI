@@ -1,7 +1,6 @@
 import { Switch } from './components/Switch';
 import { onWindowsCloseRequested } from './services/events';
 import {
-  openExternalUrl,
   getGuiSettings,
   resolveWindowsCloseRequest as resolveWindowsCloseRequestCommand,
 } from './services/appSettings';
@@ -12,10 +11,8 @@ import { MessageNotice } from './appNotice';
 import { ThemeSelector } from './components/ThemeSelector';
 import { Fragment, useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import {
-  Bot,
   Check,
   ChevronsUpDown,
-  ExternalLink,
   Eye,
   EyeOff,
   Gauge,
@@ -24,26 +21,17 @@ import {
   Languages,
   Lock,
   LogIn,
-  MessageCircle,
   Network,
-  PackageOpen,
   Puzzle,
   ServerCog,
-  Settings,
-  Sprout,
   X,
 } from 'lucide-react';
 import appLogo from './assets/logo.jpg';
 import { CoreRuntimeProvider, useCoreRuntime } from './coreRuntime';
-import { CoreUpdateProvider, useCoreUpdate } from './coreUpdate';
-import { ConfigPanelPage } from './pages/ConfigPanel';
 import { ApiAccessPage } from './pages/ApiAccessPage';
 import { KernelPage } from './pages/Kernel';
-import { VersionManagementPage } from './pages/VersionManagementPage';
 import { OAuthManagementPage } from './pages/ManagementPages';
 import { QuotaPage } from './pages/QuotaPage';
-import { AgentsPage } from './pages/AgentsPage';
-import { EasyModePage } from './pages/EasyModePage';
 import { UsageRecordsPage } from './pages/UsageRecordsPage';
 import { PluginsPage } from './pages/PluginsPage';
 import { PluginResourcePage } from './pages/PluginResourcePage';
@@ -57,24 +45,13 @@ import {
   type PluginNavOverride,
 } from './services/pluginNavigation';
 import { languageOptions, useI18n } from './i18n';
-import { AppUpdateDialog, AppUpdateProvider, useAppUpdate } from './appUpdate';
-import { appUpdateIndicatorState } from './appUpdateModel';
 import { canOpenAppPage, requestAppNavigation } from './navigation';
 import { useThemePreference } from './theme';
 import { usePrivacyMode } from './privacy';
 import { Dialog } from './components/Dialog';
 import { EmptyState } from './components/EmptyState';
 
-const QQ_CONTACT_URL = 'https://qm.qq.com/q/3queDaIG';
-const DISCORD_SERVER_URL = 'https://discord.gg/PxvX4D9kgs';
-
 const pages = [
-  {
-    id: 'easy',
-    labelKey: 'app.nav.easy',
-    icon: House,
-    component: HomePage,
-  },
   {
     id: 'home',
     labelKey: 'app.nav.home',
@@ -100,28 +77,10 @@ const pages = [
     component: QuotaPage,
   },
   {
-    id: 'agents',
-    labelKey: 'app.nav.agents',
-    icon: Bot,
-    component: AgentsPage,
-  },
-  {
     id: 'usage-records',
     labelKey: 'app.nav.usageRecords',
     icon: History,
     component: UsageRecordsPage,
-  },
-  {
-    id: 'config',
-    labelKey: 'app.nav.config',
-    icon: Settings,
-    component: ConfigPanelPage,
-  },
-  {
-    id: 'versions',
-    labelKey: 'app.nav.versions',
-    icon: PackageOpen,
-    component: VersionManagementPageWrapper,
   },
   {
     id: 'plugins',
@@ -141,29 +100,19 @@ type WindowsClosePrompt = {
 };
 
 function HomePage() {
-  return <KernelPage view="home" />;
-}
-
-function VersionManagementPageWrapper() {
-  return <VersionManagementPage />;
+  return <KernelPage />;
 }
 
 function App() {
   return (
-    <AppUpdateProvider>
-      <CoreRuntimeProvider>
-        <CoreUpdateProvider>
-          <WindowFrame><AppContent /></WindowFrame>
-        </CoreUpdateProvider>
-      </CoreRuntimeProvider>
-    </AppUpdateProvider>
+    <CoreRuntimeProvider>
+      <WindowFrame><AppContent /></WindowFrame>
+    </CoreRuntimeProvider>
   );
 }
 
 function AppContent() {
   const { locale, setLocale, t } = useI18n();
-  const { info: appUpdateInfo, hasUpdate, processing: appUpdateProcessing } = useAppUpdate();
-  const { latest: coreLatest, hasUpdate: coreHasUpdate } = useCoreUpdate();
   const [active, setActive] = useState<AppPageId>('home');
   const [languageMenuOpen, setLanguageMenuOpen] = useState(false);
   const [theme, setTheme] = useThemePreference();
@@ -177,7 +126,7 @@ function AppContent() {
   const [navElement, setNavElement] = useState<HTMLElement | null>(null);
   const { entries: pluginEntries, fetched: pluginEntriesFetched } = usePluginNavEntries(coreReady);
   const pluginEntry = findPluginNavEntry(pluginEntries, active);
-  const navPages = pages.filter((page) => page.id !== 'easy');
+  const navPages = pages;
   const { layout: autoPluginLayout, compact: navCompact } = usePluginNavLayout(navElement, navPages.length, pluginEntries.length);
   const [pluginReload, setPluginReload] = useState(0);
   const [pluginNavOverride, setPluginNavOverride] = useState<PluginNavOverride | null>(null);
@@ -191,14 +140,6 @@ function AppContent() {
   const ActivePage = activePage?.component;
   const selectedLanguage = languageOptions.find((option) => option.value === locale)
     ?? languageOptions[0];
-  const availableUpdateLabel = [
-    hasUpdate
-      ? t('appUpdate.badgeAvailable', { version: appUpdateInfo?.latestVersion ?? '' })
-      : '',
-    coreHasUpdate
-      ? `${t('kernel.versions.coreCardTitle')}: ${t('kernel.update.available')} ${coreLatest?.version ?? ''}`.trim()
-      : '',
-  ].filter(Boolean).join(' · ');
   useEffect(() => {
     if (!canOpenAppPage(active, coreReady)) {
       setActive('home');
@@ -314,16 +255,6 @@ function AppContent() {
     return () => window.removeEventListener('app:navigate', handleNavigate);
   }, [select]);
 
-  const openContact = async () => {
-    try {
-      await openExternalUrl({
-        url: locale === 'zh-CN' ? QQ_CONTACT_URL : DISCORD_SERVER_URL,
-      });
-    } catch (error) {
-      console.error('Failed to open the contact link', error);
-    }
-  };
-
   const resolveWindowsCloseRequest = async (
     action: WindowsCloseAction,
     remember = windowsClosePrompt?.rememberChoice ?? false,
@@ -360,8 +291,8 @@ function AppContent() {
 
   return (
     <>
-      <div className={`app-shell${active === "easy" ? " app-shell-easy-mode" : ""}`}>
-        {active !== "easy" ? (
+      <div className="app-shell">
+        {(
           <aside className="sidebar">
             <div className="sidebar-brand" title={t('app.desktopConsole')}>
               <img src={appLogo} alt="" className="brand-mark brand-logo" />
@@ -383,9 +314,6 @@ function AppContent() {
                 const isActive = page.id === active
                   || (hasPluginChildren && !pluginNavExpanded && pluginChildActive);
                 const locked = !canOpenAppPage(page.id, coreReady);
-                const updateIndicator = page.id === 'versions'
-                  ? appUpdateIndicatorState(hasUpdate, coreHasUpdate, appUpdateProcessing)
-                  : null;
                 const row = (
                   <button
                     key={page.id}
@@ -405,16 +333,6 @@ function AppContent() {
                     <span>{t(page.labelKey)}</span>
                     {locked ? (
                       <Lock size={12} strokeWidth={1.75} className="nav-lock-icon" aria-hidden="true" />
-                    ) : updateIndicator ? (
-                      <i
-                        className={`nav-update-indicator ${updateIndicator}`}
-                        title={updateIndicator === 'processing'
-                          ? t('appUpdate.progressTitle')
-                          : availableUpdateLabel}
-                        aria-label={updateIndicator === 'processing'
-                          ? t('appUpdate.progressTitle')
-                          : availableUpdateLabel}
-                      />
                     ) : null}
                   </button>
                 );
@@ -446,27 +364,6 @@ function AppContent() {
             </nav>
 
             <div className="sidebar-bottom">
-              <div className="sidebar-links">
-                <button
-                  type="button"
-                  className="sidebar-link sidebar-easy-entry"
-                  onClick={() => select('easy')}
-                >
-                  <Sprout size={16} strokeWidth={1.75} aria-hidden="true" />
-                  <span>{t('app.nav.easy')}</span>
-                </button>
-                <button
-                  type="button"
-                  className="sidebar-link sidebar-contact"
-                  title={t('app.contact.title')}
-                  onClick={() => void openContact()}
-                >
-                  <MessageCircle size={16} strokeWidth={1.75} aria-hidden="true" />
-                  <span>{t('app.contact.label')}</span>
-                  <ExternalLink size={12} strokeWidth={1.75} aria-hidden="true" />
-                </button>
-              </div>
-
               <div className="sidebar-utility">
                 <div ref={languageMenuRef} className="sidebar-language">
                   <button
@@ -545,7 +442,7 @@ function AppContent() {
               </div>
             </div>
           </aside>
-        ) : null}
+        )}
 
         <div className="workspace">
           <main className="content">
@@ -554,17 +451,7 @@ function AppContent() {
             ) : pluginEntry ? (
               <PluginResourcePage key={pluginEntry.route} entry={pluginEntry} reloadToken={pluginReload} />
             ) : ActivePage ? (
-              active === 'easy' ? (
-                <EasyModePage
-                  onExit={() => select('home')}
-                  theme={theme}
-                  setTheme={setTheme}
-                  locale={locale}
-                  setLocale={setLocale}
-                />
-              ) : (
-                <ActivePage />
-              )
+              <ActivePage />
             ) : null}
           </main>
         </div>
@@ -638,7 +525,6 @@ function AppContent() {
         </Dialog>
       ) : null}
 
-      <AppUpdateDialog />
     </>
   );
 }
